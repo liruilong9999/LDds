@@ -1,13 +1,12 @@
-#ifndef LIDL_H
-#define LIDL_H
+#pragma once
+
+#include <string>
 
 #include "LIdl_global.h"
 
 class LIDL_EXPORT LIdl
 {
 public:
-private:
-    LIdl();
+    // Generate C++ headers/sources from .lidl content, return true on success.
+    static bool generateFromFile(const std::string & lidlFile, const std::string & outDir);
 };
-
-#endif // LIDL_H
