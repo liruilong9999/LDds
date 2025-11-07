@@ -10,4 +10,4 @@ get_filename_component(ProjectName ${AbsolutePathProject} NAME)
 set(SELF_LIBRARY_LIST "LDds" "LIdl")
 # 创建项目
 CreateTarget(${ProjectName} "ExeCMD") 
-  
+   

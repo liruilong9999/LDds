@@ -17,6 +17,33 @@
 
 ## 二、数据格式和要求
 
+使用C++（std实现下面的功能：实现一个类似dds解析idl文件为代码文件的工具，下面给出了解析参数的样式）,要求
+
+代码规范，采用小驼峰命名变量，类的成员采用m_小驼峰，函数小驼峰，每个类，结构体都需要注释说明用途。指针p大驼峰命名，成员指针m_p大驼峰.文件名大驼峰
+
+注释风格 
+
+```C++
+///////////////
+/// add 函数作用
+/// param1 data1 参数1
+/// param1 data2 参数2
+/// return 返回xx
+/// by:李瑞龙
+///////////////
+
+int add(int param1,int param2)
+{
+    return param1+param2;
+}
+```
+
+要求函数注释写在函数定义前面，参数注释写在参数后面
+
+
+
+
+
 ### 1.lidl描述文件示例
 
 file1.lidl
@@ -42,9 +69,7 @@ package P1
         double data1;
         int data2;
     	[data1Vec,,"这是data1Vec的注释，容器无默认参数']
-        vector<int> data1Vec;
-        map<int,string> m1;
-        vector<map<int,double>> vm;
+        vector<int> data1Vec; 
     };
 };
 
@@ -87,8 +112,7 @@ file1_define.h
 #define FILE1_DEFINE_H
 
 #include <vector>
-#include <string>
-#include <map>
+#include <string> 
 
 namespace P1 {
 namespace P2 {
@@ -107,9 +131,7 @@ struct Param1 : public P1::P2::Handle
     std::string                        str1{"测试字符串"}; // 这是str1的注释，默认参数为 测试字符串，表示句柄，唯一标识符
     double                             data1;
     int                                data2;
-    std::vector<int>                   data1Vec; // 这是data1Vec的注释，容器无默认参数
-    std::map<int, std::string>         m1;
-    std::vector<std::map<int, double>> vm;
+    std::vector<int>                   data1Vec; // 这是data1Vec的注释，容器无默认参数 
 };
 
 } // namespace P1

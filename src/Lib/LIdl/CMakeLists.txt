@@ -13,5 +13,5 @@ get_filename_component(ProjectName ${AbsolutePathProject} NAME)
 add_compile_definitions(LIDL_LIBRARY)
 
 # 创建项目
-CreateTarget(${ProjectName} "Dll")  
- 
+CreateTarget(${ProjectName} "Dll") 
+  
