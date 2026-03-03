@@ -13,6 +13,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include "LDds_Global.h"
 
 namespace LDdsFramework {
 
@@ -26,14 +27,14 @@ class LIdlParser;
  */
 enum class TargetLanguage : uint32_t
 {
-    Cpp         = 0,    ///< C++ 语言
-    CSharp      = 1,    ///< C# 语言
-    Java        = 2,    ///< Java 语言
-    Python      = 3,    ///< Python 语言
-    Go          = 4,    ///< Go 语言
-    Rust        = 5,    ///< Rust 语言
-    TypeScript  = 6,    ///< TypeScript 语言
-    Custom      = 255   ///< 自定义目标语言
+    Cpp        = 0,  ///< C++ 语言
+    CSharp     = 1,  ///< C# 语言
+    Java       = 2,  ///< Java 语言
+    Python     = 3,  ///< Python 语言
+    Go         = 4,  ///< Go 语言
+    Rust       = 5,  ///< Rust 语言
+    TypeScript = 6,  ///< TypeScript 语言
+    Custom     = 255 ///< 自定义目标语言
 };
 
 /**
@@ -41,17 +42,17 @@ enum class TargetLanguage : uint32_t
  */
 struct GeneratorOptions
 {
-    bool generateComments;          ///< 是否生成注释
-    bool generateSerialization;     ///< 是否生成序列化代码
-    bool generateDeserialization;   ///< 是否生成反序列化代码
-    bool generateConstructors;      ///< 是否生成构造函数
-    bool generateOperators;         ///< 是否生成比较操作符
-    bool useNamespace;              ///< 是否使用命名空间包裹
-    bool usePragmaOnce;             ///< 是否使用#pragma once
-    std::string indentStyle;        ///< 缩进风格（空格或制表符）
-    uint32_t indentSize;            ///< 缩进大小
-    std::string namespaceName;      ///< 目标命名空间名称
-    std::string outputExtension;    ///< 输出文件扩展名
+    bool        generateComments;        ///< 是否生成注释
+    bool        generateSerialization;   ///< 是否生成序列化代码
+    bool        generateDeserialization; ///< 是否生成反序列化代码
+    bool        generateConstructors;    ///< 是否生成构造函数
+    bool        generateOperators;       ///< 是否生成比较操作符
+    bool        useNamespace;            ///< 是否使用命名空间包裹
+    bool        usePragmaOnce;           ///< 是否使用#pragma once
+    std::string indentStyle;             ///< 缩进风格（空格或制表符）
+    uint32_t    indentSize;              ///< 缩进大小
+    std::string namespaceName;           ///< 目标命名空间名称
+    std::string outputExtension;         ///< 输出文件扩展名
 
     /**
      * @brief 默认构造函数
@@ -76,12 +77,12 @@ struct GeneratorOptions
  */
 struct GenerationResult
 {
-    bool success;                           ///< 生成是否成功
-    std::string outputPath;                 ///< 生成的文件路径
-    std::string generatedCode;              ///< 生成的代码内容
-    std::vector<std::string> messages;    ///< 生成过程中的消息
-    double generationTimeMs;                ///< 生成耗时（毫秒）
-    size_t linesGenerated;                  ///< 生成的代码行数
+    bool                     success;          ///< 生成是否成功
+    std::string              outputPath;       ///< 生成的文件路径
+    std::string              generatedCode;    ///< 生成的代码内容
+    std::vector<std::string> messages;         ///< 生成过程中的消息
+    double                   generationTimeMs; ///< 生成耗时（毫秒）
+    size_t                   linesGenerated;   ///< 生成的代码行数
 
     /**
      * @brief 默认构造函数
@@ -107,11 +108,11 @@ struct GenerationResult
  * @brief 生成进度回调函数类型
  */
 using GenerationProgressCallback = std::function<void(
-    const std::string& currentFile,       /* 当前处理文件 */
-    uint32_t currentItem,                   /* 当前项索引 */
-    uint32_t totalItems,                    /* 总项数 */
-    const std::string& message            /* 状态消息 */
-)>;
+    const std::string & currentFile, /* 当前处理文件 */
+    uint32_t            currentItem, /* 当前项索引 */
+    uint32_t            totalItems,  /* 总项数 */
+    const std::string & message      /* 状态消息 */
+    )>;
 
 /**
  * @class LIdlGenerator
@@ -120,7 +121,7 @@ using GenerationProgressCallback = std::function<void(
  * 将IDL抽象语法树转换为各种目标语言的代码。
  * 支持自定义模板和代码生成选项。
  */
-class LIdlGenerator final
+class LDDSCORE_EXPORT LIdlGenerator final
 {
 public:
     /**
@@ -147,22 +148,22 @@ public:
     /**
      * @brief 禁止拷贝构造
      */
-    LIdlGenerator(const LIdlGenerator& other) = delete;
+    LIdlGenerator(const LIdlGenerator & other) = delete;
 
     /**
      * @brief 禁止拷贝赋值
      */
-    LIdlGenerator& operator=(const LIdlGenerator& other) = delete;
+    LIdlGenerator & operator=(const LIdlGenerator & other) = delete;
 
     /**
      * @brief 允许移动构造
      */
-    LIdlGenerator(LIdlGenerator&& other) noexcept;
+    LIdlGenerator(LIdlGenerator && other) noexcept;
 
     /**
      * @brief 允许移动赋值
      */
-    LIdlGenerator& operator=(LIdlGenerator&& other) noexcept;
+    LIdlGenerator & operator=(LIdlGenerator && other) noexcept;
 
     /**
      * @brief 设置目标语言
@@ -180,19 +181,19 @@ public:
      * @brief 设置生成选项
      * @param[in] options 生成选项配置
      */
-    void setOptions(const GeneratorOptions& options);
+    void setOptions(const GeneratorOptions & options);
 
     /**
      * @brief 获取当前生成选项
      * @return 当前生成选项的常量引用
      */
-    const GeneratorOptions& getOptions() const noexcept;
+    const GeneratorOptions & getOptions() const noexcept;
 
     /**
      * @brief 设置进度回调
      * @param[in] callback 进度回调函数
      */
-    void setProgressCallback(const GenerationProgressCallback& callback);
+    void setProgressCallback(const GenerationProgressCallback & callback);
 
     /**
      * @brief 从解析结果生成代码
@@ -204,8 +205,8 @@ public:
      * @return 生成结果，包含生成的代码和状态
      */
     GenerationResult generate(
-        const ParseResult& parseResult,     /* 解析结果 */
-        const std::string& outputPath        /* 输出路径 */
+        const ParseResult & parseResult, /* 解析结果 */
+        const std::string & outputPath   /* 输出路径 */
     );
 
     /**
@@ -218,8 +219,8 @@ public:
      * @return 生成结果
      */
     GenerationResult generateFromAst(
-        const std::shared_ptr<AstNode>& astRoot,   /* AST根节点 */
-        const std::string& outputPath               /* 输出路径 */
+        const std::shared_ptr<AstNode> & astRoot,   /* AST根节点 */
+        const std::string &              outputPath /* 输出路径 */
     );
 
     /**
@@ -232,8 +233,8 @@ public:
      * @return 生成结果列表
      */
     std::vector<GenerationResult> generateBatch(
-        const std::vector<ParseResult>& parseResults,  /* 解析结果列表 */
-        const std::string& outputDirectory               /* 输出目录 */
+        const std::vector<ParseResult> & parseResults,   /* 解析结果列表 */
+        const std::string &              outputDirectory /* 输出目录 */
     );
 
     /**
@@ -260,17 +261,17 @@ public:
 
 private:
     /**
-     * @brief Target language
+     * @brief 目标语言
      */
     TargetLanguage m_target;
 
     /**
-     * @brief Generator options
+     * @brief 生成器选项
      */
     GeneratorOptions m_options;
 
     /**
-     * @brief Progress callback
+     * @brief 进度回调
      */
     GenerationProgressCallback m_callback;
 };

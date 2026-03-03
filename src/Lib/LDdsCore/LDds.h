@@ -16,6 +16,7 @@
 #include "LIdlParser.h"
 #include "LIdlGenerator.h"
 
+#include "LDds_Global.h"
 /**
  * @namespace LDdsFramework
  * @brief LDds框架根命名空间
@@ -26,13 +27,13 @@ namespace LDdsFramework {
  * @brief 获取框架版本号
  * @return 版本号字符串，格式: "主版本.次版本.修订版本"
  */
-const char* getVersion() noexcept;
+const char * getVersion() noexcept;
 
 /**
  * @brief 获取框架构建时间
  * @return 构建时间字符串，格式: "YYYY-MM-DD HH:MM:SS"
  */
-const char* getBuildTime() noexcept;
+const char * getBuildTime() noexcept;
 
 /**
  * @brief 初始化LDds框架

@@ -15,6 +15,7 @@
 #include <functional>
 #include <memory>
 #include <vector>
+#include "LDds_Global.h"
 
 namespace LDdsFramework {
 
@@ -45,7 +46,7 @@ constexpr SetId INVALID_SET_ID = static_cast<SetId>(-1);
  * 使用路径压缩和按秩合并优化，提供接近常数时间的
  * 集合查询和合并操作。
  */
-class LFindSet final
+class LDDSCORE_EXPORT LFindSet final
 {
 public:
     /**
@@ -72,22 +73,22 @@ public:
     /**
      * @brief 禁止拷贝构造
      */
-    LFindSet(const LFindSet& other) = delete;
+    LFindSet(const LFindSet & other) = delete;
 
     /**
      * @brief 禁止拷贝赋值
      */
-    LFindSet& operator=(const LFindSet& other) = delete;
+    LFindSet & operator=(const LFindSet & other) = delete;
 
     /**
      * @brief 允许移动构造
      */
-    LFindSet(LFindSet&& other) noexcept;
+    LFindSet(LFindSet && other) noexcept;
 
     /**
      * @brief 允许移动赋值
      */
-    LFindSet& operator=(LFindSet&& other) noexcept;
+    LFindSet & operator=(LFindSet && other) noexcept;
 
     /**
      * @brief 初始化并查集
@@ -168,8 +169,8 @@ public:
      * @param[in] callback 回调函数，参数为元素ID，返回false停止遍历
      */
     void enumerateSet(
-        ElementId setId,                                      /* 集合代表元 */
-        const std::function<bool(ElementId)>& callback     /* 遍历回调 */
+        ElementId                              setId,   /* 集合代表元 */
+        const std::function<bool(ElementId)> & callback /* 遍历回调 */
     ) const;
 
 private:

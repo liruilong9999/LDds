@@ -3,7 +3,7 @@
  * @brief LFindSet类实现
  */
 
-#include "LDds/LFindSet.h"
+#include "LFindSet.h"
 
 namespace LDdsFramework {
 
@@ -19,14 +19,15 @@ LFindSet::LFindSet(size_t capacity)
     , m_rank(capacity, 0)
     , m_setCount(capacity)
 {
-    for (size_t i = 0; i < capacity; ++i) {
+    for (size_t i = 0; i < capacity; ++i)
+    {
         m_parent[i] = static_cast<ElementId>(i);
     }
 }
 
 LFindSet::~LFindSet() noexcept = default;
 
-LFindSet::LFindSet(LFindSet&& other) noexcept
+LFindSet::LFindSet(LFindSet && other) noexcept
     : m_parent(std::move(other.m_parent))
     , m_rank(std::move(other.m_rank))
     , m_setCount(other.m_setCount)
@@ -34,12 +35,13 @@ LFindSet::LFindSet(LFindSet&& other) noexcept
     other.m_setCount = 0;
 }
 
-LFindSet& LFindSet::operator=(LFindSet&& other) noexcept
+LFindSet & LFindSet::operator=(LFindSet && other) noexcept
 {
-    if (this != &other) {
-        m_parent = std::move(other.m_parent);
-        m_rank = std::move(other.m_rank);
-        m_setCount = other.m_setCount;
+    if (this != &other)
+    {
+        m_parent         = std::move(other.m_parent);
+        m_rank           = std::move(other.m_rank);
+        m_setCount       = other.m_setCount;
         other.m_setCount = 0;
     }
     return *this;
@@ -51,7 +53,8 @@ void LFindSet::init(size_t count)
     m_rank.assign(count, 0);
     m_setCount = count;
 
-    for (size_t i = 0; i < count; ++i) {
+    for (size_t i = 0; i < count; ++i)
+    {
         m_parent[i] = static_cast<ElementId>(i);
     }
 }
@@ -99,8 +102,8 @@ bool LFindSet::isValidElement(ElementId element) const noexcept
 }
 
 void LFindSet::enumerateSet(
-    ElementId setId,
-    const std::function<bool(ElementId)>& callback) const
+    ElementId                              setId,
+    const std::function<bool(ElementId)> & callback) const
 {
     (void)setId;
     (void)callback;
