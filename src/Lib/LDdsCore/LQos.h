@@ -1,6 +1,11 @@
 /**
  * @file LQos.h
- * @brief QoS policies
+ * @brief QoS 策略与配置模型定义。
+ *
+ * 该文件定义了：
+ * 1. 常用 DDS 风格策略枚举与策略结构体；
+ * 2. `LQos` 统一配置对象；
+ * 3. XML 加载、配置校验、兼容性检查与合并入口。
  */
 #ifndef LDDSFRAMEWORK_LQOS_H_
 #define LDDSFRAMEWORK_LQOS_H_
@@ -14,9 +19,18 @@
 
 namespace LDdsFramework {
 
+/**
+ * @brief 无限时长常量（秒字段使用负值表示）。
+ */
 constexpr int64_t DURATION_INFINITY = -1;
+/**
+ * @brief 无效 QoS 策略 ID。
+ */
 constexpr uint32_t INVALID_QOS_POLICY_ID = 0;
 
+/**
+ * @brief QoS 策略类型标识。
+ */
 enum class QosPolicyType : uint32_t
 {
     Invalid = 0,
@@ -40,12 +54,18 @@ enum class QosPolicyType : uint32_t
     ContentFilter = 18,
 };
 
+/**
+ * @brief 可靠性等级。
+ */
 enum class ReliabilityKind : uint32_t
 {
     BestEffort = 0,
     Reliable = 1,
 };
 
+/**
+ * @brief 持久化等级。
+ */
 enum class DurabilityKind : uint32_t
 {
     Volatile = 0,
@@ -54,12 +74,18 @@ enum class DurabilityKind : uint32_t
     Persistent = 3,
 };
 
+/**
+ * @brief 历史缓存策略。
+ */
 enum class HistoryKind : uint32_t
 {
     KeepLast = 0,
     KeepAll = 1,
 };
 
+/**
+ * @brief 存活检测模式。
+ */
 enum class LivelinessKind : uint32_t
 {
     Automatic = 0,
@@ -67,12 +93,18 @@ enum class LivelinessKind : uint32_t
     ManualByTopic = 2,
 };
 
+/**
+ * @brief 所有权模式。
+ */
 enum class OwnershipKind : uint32_t
 {
     Shared = 0,
     Exclusive = 1,
 };
 
+/**
+ * @brief 展示一致性范围。
+ */
 enum class PresentationMode : uint32_t
 {
     Instance = 0,
@@ -80,12 +112,18 @@ enum class PresentationMode : uint32_t
     Group = 2,
 };
 
+/**
+ * @brief 传输类型。
+ */
 enum class TransportType : uint32_t
 {
     UDP = 0,
     TCP = 1,
 };
 
+/**
+ * @brief 时长结构（秒+纳秒）。
+ */
 struct Duration
 {
     int64_t seconds;
@@ -244,6 +282,9 @@ struct OwnershipQosPolicy
 class LDDSCORE_EXPORT LQos final
 {
 public:
+    /**
+     * @brief 构造与拷贝/移动语义。
+     */
     LQos() noexcept;
     LQos(const LQos & other);
     LQos & operator=(const LQos & other);
@@ -251,6 +292,9 @@ public:
     LQos & operator=(LQos && other) noexcept;
     ~LQos() noexcept;
 
+    /**
+     * @brief 恢复默认配置。
+     */
     void resetToDefaults() noexcept;
 
     void setTransportType(TransportType type) noexcept;
@@ -280,8 +324,18 @@ public:
     void setUserData(const UserDataQosPolicy & policy);
     const UserDataQosPolicy & getUserData() const noexcept;
 
+    /**
+     * @brief 校验当前 QoS 是否自洽。
+     * @param errorMessage 输出错误信息。
+     */
     bool validate(std::string & errorMessage) const;
+    /**
+     * @brief 检查与另一组 QoS 的兼容性。
+     */
     bool isCompatibleWith(const LQos & other, std::string & errorMessage) const;
+    /**
+     * @brief 将另一组 QoS 合并到当前对象。
+     */
     void merge(const LQos & other);
 
     /**
@@ -304,17 +358,53 @@ public:
      * @brief 传输类型选择（UDP/TCP）。
      */
     TransportType transportType;
+    /**
+     * @brief Domain ID（0-255）。
+     */
     uint8_t domainId;
+    /**
+     * @brief 是否启用按 Domain 映射端口。
+     */
     bool enableDomainPortMapping;
+    /**
+     * @brief 映射基准端口。
+     */
     uint16_t basePort;
+    /**
+     * @brief Domain 端口偏移量。
+     */
     uint16_t domainPortOffset;
+    /**
+     * @brief 持久化数据库路径（Durability=Persistent 时使用）。
+     */
     std::string durabilityDbPath;
+    /**
+     * @brief 是否启用指标输出。
+     */
     bool enableMetrics;
+    /**
+     * @brief 指标服务端口。
+     */
     uint16_t metricsPort;
+    /**
+     * @brief 指标服务绑定地址。
+     */
     std::string metricsBindAddress;
+    /**
+     * @brief 是否启用结构化日志。
+     */
     bool structuredLogEnabled;
+    /**
+     * @brief 是否启用安全能力。
+     */
     bool securityEnabled;
+    /**
+     * @brief 是否启用 payload 加密。
+     */
     bool securityEncryptPayload;
+    /**
+     * @brief 预共享密钥（PSK）。
+     */
     std::string securityPsk;
 
     /**

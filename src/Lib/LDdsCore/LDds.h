@@ -1,6 +1,12 @@
 /**
  * @file LDds.h
- * @brief LDds public headers
+ * @brief LDds 核心对外接口。
+ *
+ * 该头文件定义了 LDds 运行时主类，负责：
+ * 1. 初始化/关闭传输与 QoS 运行环境；
+ * 2. 类型注册、发布订阅、Domain 数据缓存；
+ * 3. 可靠传输、发现协议、热更新、安全与观测能力的调度；
+ * 4. 统一错误与结构化日志输出。
  */
 
 #ifndef LDDSFRAMEWORK_LDDS_H_
@@ -34,33 +40,78 @@
 
 namespace LDdsFramework {
 
+/**
+ * @class LDds
+ * @brief LDds 运行时核心对象。
+ *
+ * 生命周期建议：
+ * 1. 创建对象；
+ * 2. `initialize(...)` 初始化；
+ * 3. 注册类型并订阅/发布；
+ * 4. 结束时调用 `shutdown()`。
+ */
 class LDDSCORE_EXPORT LDds final
 {
 public:
+    /**
+     * @brief 订阅回调：输出 topic 和反序列化后对象。
+     */
     using TopicCallback = std::function<void(uint32_t topic, const std::shared_ptr<void> & object)>;
+    /**
+     * @brief deadline 超时回调。
+     */
     using DeadlineMissedCallback = std::function<void(uint32_t topic, uint64_t elapsedMs)>;
+    /**
+     * @brief 日志回调（用于接管内部日志输出）。
+     */
     using LogCallback = std::function<void(const std::string & line)>;
 
+    /**
+     * @brief 构造/析构函数。
+     */
     LDds();
     ~LDds();
 
     LDds(const LDds & other) = delete;
     LDds & operator=(const LDds & other) = delete;
 
+    /**
+     * @brief 按 QoS 初始化运行时。
+     */
     bool initialize(const LQos & qos);
+    /**
+     * @brief 按 QoS + 传输配置初始化，并可显式指定 domainId。
+     */
     bool initialize(const LQos & qos, const TransportConfig & transportConfig, DomainId domainId = INVALID_DOMAIN_ID);
+    /**
+     * @brief 从 XML 加载 QoS 后初始化。
+     */
     bool initializeFromQosXml(
         const std::string & qosXmlPath,
         const TransportConfig & transportConfig = TransportConfig(),
         DomainId domainId = INVALID_DOMAIN_ID
     );
+    /**
+     * @brief 关闭运行时，停止线程并释放网络资源。
+     */
     void shutdown() noexcept;
 
+    /**
+     * @brief 查询当前是否处于运行状态。
+     */
     bool isRunning() const noexcept;
 
+    /**
+     * @brief 设置/获取类型注册中心。
+     *
+     * 默认情况下会自动创建内部注册中心；业务也可注入自定义实现。
+     */
     void setTypeRegistry(std::shared_ptr<LTypeRegistry> typeRegistry);
     std::shared_ptr<LTypeRegistry> getTypeRegistry() const;
 
+    /**
+     * @brief 注册类型元信息（显式工厂/序列化函数版本）。
+     */
     bool registerType(
         const std::string & typeName,
         uint32_t topic,
@@ -102,6 +153,9 @@ public:
     }
 
     bool publishTopic(uint32_t topic, const std::vector<uint8_t> & payload);
+    /**
+     * @brief 通过类型名发布对象（使用类型注册中心序列化）。
+     */
     bool publishTopic(const std::string & typeName, const std::shared_ptr<void> & object);
 
     template<typename T>
@@ -155,17 +209,38 @@ public:
         );
     }
 
+    /**
+     * @brief 取消指定 topic 的全部订阅。
+     */
     void unsubscribeTopic(uint32_t topic);
+    /**
+     * @brief 设置 deadline 超时回调。
+     */
     void setDeadlineMissedCallback(DeadlineMissedCallback callback);
+    /**
+     * @brief 设置日志输出回调。
+     */
     void setLogCallback(LogCallback callback);
+    /**
+     * @brief 导出当前运行指标（文本格式）。
+     */
     std::string exportMetricsText() const;
 
+    /**
+     * @brief 获取当前 QoS 与传输协议。
+     */
     const LQos & getQos() const noexcept;
     TransportProtocol getTransportProtocol() const noexcept;
 
+    /**
+     * @brief 访问当前 Domain 对象。
+     */
     LDomain & domain() noexcept;
     const LDomain & domain() const noexcept;
 
+    /**
+     * @brief 获取最近一次错误信息。
+     */
     std::string getLastError() const;
 
 private:
@@ -390,10 +465,22 @@ private:
 };
 
 const char * getVersion() noexcept;
+/**
+ * @brief 返回构建时间字符串。
+ */
 const char * getBuildTime() noexcept;
 
+/**
+ * @brief 模块级初始化（兼容旧接口）。
+ */
 bool initialize() noexcept;
+/**
+ * @brief 模块级关闭（兼容旧接口）。
+ */
 void shutdown() noexcept;
+/**
+ * @brief 模块是否已初始化（兼容旧接口）。
+ */
 bool isInitialized() noexcept;
 
 } // namespace LDdsFramework

@@ -1,5 +1,10 @@
-﻿#ifndef LDDSFRAMEWORK_LIDLPARSER_H_
+#ifndef LDDSFRAMEWORK_LIDLPARSER_H_
 #define LDDSFRAMEWORK_LIDLPARSER_H_
+
+/**
+ * @file LIdlParser.h
+ * @brief LIDL 语法解析器与 AST 数据结构定义。
+ */
 
 #include <cstdint>
 #include <functional>
@@ -16,17 +21,28 @@ namespace LDdsFramework {
  */
 enum class ParseErrorLevel : uint32_t
 {
+    /** @brief 警告，不阻断生成流程。 */
     Warning = 0,
+    /** @brief 错误，通常导致当前文件解析失败。 */
     Error   = 1,
+    /** @brief 致命错误，建议立即终止后续处理。 */
     Fatal   = 2
 };
 
+/**
+ * @brief 单条解析错误信息。
+ */
 struct ParseError
 {
+    /** @brief 错误级别。 */
     ParseErrorLevel level;
+    /** @brief 错误描述文本。 */
     std::string     message;
+    /** @brief 源文件路径。 */
     std::string     filePath;
+    /** @brief 行号（1-based）。 */
     uint32_t        line;
+    /** @brief 列号（1-based）。 */
     uint32_t        column;
 
     ParseError() noexcept
@@ -38,14 +54,19 @@ struct ParseError
 };
 
 /**
- * @brief 解析器可选项。
+ * @brief 解析选项。
  */
 struct ParseOptions
 {
+    /** @brief 是否忽略注释内容。 */
     bool                     ignoreComments;
+    /** @brief 是否启用严格模式。 */
     bool                     strictMode;
+    /** @brief 是否保留注解信息。 */
     bool                     includeAnnotations;
+    /** @brief include 最大递归深度。 */
     uint32_t                 maxIncludeDepth;
+    /** @brief include 搜索路径列表。 */
     std::vector<std::string> includePaths;
 
     ParseOptions() noexcept
@@ -57,6 +78,9 @@ struct ParseOptions
     }
 };
 
+/**
+ * @brief 字段属性（例如注解参数）。
+ */
 struct LIdlFieldAttribute
 {
     std::string              name;
@@ -65,16 +89,28 @@ struct LIdlFieldAttribute
     std::vector<std::string> args;
 };
 
+/**
+ * @brief 结构体字段定义。
+ */
 struct LIdlField
 {
+    /** @brief 字段类型名（原始文本）。 */
     std::string                      typeName;
+    /** @brief 字段名。 */
     std::string                      name;
+    /** @brief 注释文本。 */
     std::string                      comment;
+    /** @brief 属性列表。 */
     std::vector<LIdlFieldAttribute>  attributes;
+    /** @brief 默认值文本（若存在）。 */
     std::string                      defaultValue;
+    /** @brief 是否为 sequence 字段。 */
     bool                             isSequence;
+    /** @brief sequence 元素类型。 */
     std::string                      sequenceElementType;
+    /** @brief sequence 上界（-1 表示无界）。 */
     int32_t                          sequenceBound;
+    /** @brief 定义行号。 */
     uint32_t                         line;
 
     LIdlField()
@@ -85,6 +121,9 @@ struct LIdlField
     }
 };
 
+/**
+ * @brief 枚举值定义。
+ */
 struct LIdlEnumValue
 {
     std::string name;
@@ -101,6 +140,9 @@ struct LIdlEnumValue
     }
 };
 
+/**
+ * @brief 枚举定义。
+ */
 struct LIdlEnum
 {
     std::string                 name;
@@ -117,10 +159,16 @@ struct LIdlEnum
     }
 };
 
+/**
+ * @brief union 的单个 case 分支。
+ */
 struct LIdlUnionCase
 {
+    /** @brief case 标签集合，支持多标签映射同一字段。 */
     std::vector<int64_t> labels;
+    /** @brief 是否为 default 分支。 */
     bool                 isDefault;
+    /** @brief 分支字段定义。 */
     LIdlField            field;
 
     LIdlUnionCase()
@@ -129,6 +177,9 @@ struct LIdlUnionCase
     }
 };
 
+/**
+ * @brief union 定义。
+ */
 struct LIdlUnion
 {
     std::string                 name;
@@ -146,6 +197,9 @@ struct LIdlUnion
     }
 };
 
+/**
+ * @brief struct 定义。
+ */
 struct LIdlStruct
 {
     std::string               name;
@@ -163,6 +217,9 @@ struct LIdlStruct
     }
 };
 
+/**
+ * @brief package 节点。
+ */
 struct LIdlPackage
 {
     std::string                name;
@@ -172,6 +229,9 @@ struct LIdlPackage
     std::vector<std::string>   structNames;
 };
 
+/**
+ * @brief topic 映射定义（`TOPIC_NAME = TypeName`）。
+ */
 struct LIdlTopic
 {
     std::string name;
@@ -188,11 +248,17 @@ struct LIdlTopic
     }
 };
 
+/**
+ * @brief AST 基类。
+ */
 struct AstNode
 {
     virtual ~AstNode() = default;
 };
 
+/**
+ * @brief IDL 文件 AST 根节点。
+ */
 struct LIdlFile : AstNode
 {
     std::string              sourcePath;
@@ -209,9 +275,13 @@ struct LIdlFile : AstNode
  */
 struct ParseResult
 {
+    /** @brief 是否解析成功。 */
     bool                     success;
+    /** @brief AST 根节点（成功时通常为 `LIdlFile`）。 */
     std::shared_ptr<AstNode> astRoot;
+    /** @brief 错误列表。 */
     std::vector<ParseError>  errors;
+    /** @brief 解析耗时（毫秒）。 */
     double                   parseTimeMs;
 
     ParseResult() noexcept
@@ -220,22 +290,36 @@ struct ParseResult
     {
     }
 
+    /** @brief 是否存在指定级别错误。 */
     bool hasErrors(ParseErrorLevel level) const;
+    /** @brief 获取指定级别错误数量。 */
     size_t getErrorCount(ParseErrorLevel level) const;
 
+    /** @brief 将 `astRoot` 安全转换为 `LIdlFile`。 */
     std::shared_ptr<LIdlFile> asIdlFile() const;
 };
 
+/**
+ * @brief 解析进度回调。
+ */
 using ParseProgressCallback = std::function<void(
     const std::string & file,
     uint32_t            line,
     uint32_t            totalLines
     )>;
 
+/**
+ * @class LIdlParser
+ * @brief LIDL 文本解析器。
+ *
+ * 支持从文件、字符串、文件列表解析并产出统一 AST。
+ */
 class LDDSCORE_EXPORT LIdlParser final
 {
 public:
+    /** @brief 默认构造。 */
     LIdlParser();
+    /** @brief 使用指定选项构造。 */
     explicit LIdlParser(const ParseOptions & options);
     ~LIdlParser() noexcept;
 
@@ -245,11 +329,18 @@ public:
     LIdlParser(LIdlParser && other) noexcept;
     LIdlParser & operator=(LIdlParser && other) noexcept;
 
+    /** @brief 设置解析选项。 */
     void setOptions(const ParseOptions & options);
+    /** @brief 获取当前解析选项。 */
     const ParseOptions & getOptions() const noexcept;
 
+    /** @brief 设置进度回调。 */
     void setProgressCallback(const ParseProgressCallback & callback);
 
+    /**
+     * @brief 解析文件。
+     * @param filePath 文件路径。
+     */
     ParseResult parse(const std::string & filePath);
     /**
      * @brief 解析内存中的 IDL 文本。
@@ -260,13 +351,15 @@ public:
      */
     ParseResult parseMultiple(const std::vector<std::string> & filePaths);
 
+    /** @brief 获取最近一次解析错误列表。 */
     const std::vector<ParseError> & getLastErrors() const noexcept;
+    /** @brief 清空内部错误缓存。 */
     void clearErrors() noexcept;
 
 private:
-    ParseOptions          m_options;
-    ParseProgressCallback m_callback;
-    std::vector<ParseError> m_errors;
+    ParseOptions             m_options;
+    ParseProgressCallback    m_callback;
+    std::vector<ParseError>  m_errors;
 };
 
 } // namespace LDdsFramework

@@ -1,6 +1,17 @@
 #ifndef LDDSFRAMEWORK_SQLITEDURABILITYSTORE_H_
 #define LDDSFRAMEWORK_SQLITEDURABILITYSTORE_H_
 
+/**
+ * @file SqliteDurabilityStore.h
+ * @brief 基于 SQLite 的 Durability 持久化存储实现（header-only）。
+ *
+ * 主要能力：
+ * 1. 打开/创建数据库并初始化表结构；
+ * 2. 追加写入 topic 历史数据；
+ * 3. 按历史深度回放最近数据；
+ * 4. 自动按 topic 做历史压缩，防止无限增长。
+ */
+
 #include <cstdint>
 #include <chrono>
 #include <cstring>
@@ -18,9 +29,21 @@
 
 namespace LDdsFramework {
 
+/**
+ * @class SqliteDurabilityStore
+ * @brief Durability 持久化存储组件。
+ *
+ * 说明：
+ * 1. 当前实现为 Windows 动态加载 `winsqlite3.dll` 或 `sqlite3.dll`；
+ * 2. 线程安全由上层调用方保证（本类不做并发写保护）；
+ * 3. `historyDepth` 控制每个 topic 的保留上限。
+ */
 class SqliteDurabilityStore final
 {
 public:
+    /**
+     * @brief 构造函数。
+     */
     SqliteDurabilityStore() noexcept
         : m_db(nullptr)
         , m_domainId(0)
@@ -28,6 +51,9 @@ public:
     {
     }
 
+    /**
+     * @brief 析构函数，自动关闭数据库连接。
+     */
     ~SqliteDurabilityStore() noexcept
     {
         close();
@@ -36,6 +62,14 @@ public:
     SqliteDurabilityStore(const SqliteDurabilityStore &) = delete;
     SqliteDurabilityStore & operator=(const SqliteDurabilityStore &) = delete;
 
+    /**
+     * @brief 打开数据库并初始化 schema。
+     * @param dbPath 数据库路径（为空时自动使用 `build/ldds_domain_<id>.sqlite`）。
+     * @param domainId 当前 domain。
+     * @param historyDepth 每个 topic 的保留深度。
+     * @param errorMessage 可选错误输出。
+     * @return 成功返回 true。
+     */
     bool open(
         const std::string & dbPath,
         uint32_t domainId,
@@ -107,6 +141,9 @@ public:
         return true;
     }
 
+    /**
+     * @brief 关闭数据库连接。
+     */
     void close() noexcept
     {
         if (m_db != nullptr)
@@ -121,11 +158,23 @@ public:
         return m_db != nullptr;
     }
 
+    /**
+     * @brief 更新历史保留深度。
+     */
     void setHistoryDepth(size_t historyDepth) noexcept
     {
         m_historyDepth = historyDepth == 0 ? 1 : historyDepth;
     }
 
+    /**
+     * @brief 追加写入一条 topic 数据。
+     * @param topic topic id。
+     * @param data payload 数据。
+     * @param dataType 类型名（可选）。
+     * @param sequence 序列号。
+     * @param errorMessage 可选错误输出。
+     * @return 成功返回 true。
+     */
     bool append(
         int topic,
         const std::vector<uint8_t> & data,
@@ -195,6 +244,14 @@ public:
         return compactTopic(topic, errorMessage);
     }
 
+    /**
+     * @brief 读取最近历史并回放到内存缓存。
+     * @param historyDepth 每个 topic 的读取深度。
+     * @param topicCache 输出 topic->payload 队列。
+     * @param topicDataTypes 输出 topic->typeName。
+     * @param errorMessage 可选错误输出。
+     * @return 成功返回 true。
+     */
     bool loadRecent(
         size_t historyDepth,
         std::map<int, std::deque<std::vector<uint8_t>>> & topicCache,
@@ -271,10 +328,16 @@ public:
     }
 
 private:
+    /**
+     * @brief SQLite 句柄前置声明。
+     */
     struct sqlite3;
     struct sqlite3_stmt;
     using sqlite3_destructor_type = void (*)(void *);
 
+    /**
+     * @brief SQLite 动态符号表。
+     */
     struct SqliteApi
     {
         bool loaded = false;
@@ -305,6 +368,9 @@ private:
     static constexpr int SQLITE_OPEN_CREATE = 0x00000004;
     static constexpr int SQLITE_OPEN_FULLMUTEX = 0x00010000;
 
+    /**
+     * @brief 获取全局 API 单例。
+     */
     static SqliteApi & api()
     {
         static SqliteApi g_api;
@@ -316,6 +382,9 @@ private:
         return reinterpret_cast<sqlite3_destructor_type>(-1);
     }
 
+    /**
+     * @brief 按需加载 SQLite 动态库与符号。
+     */
     bool ensureApiLoaded(std::string & errorMessage)
     {
         SqliteApi & a = api();
@@ -382,6 +451,9 @@ private:
         return true;
     }
 
+    /**
+     * @brief 执行不返回结果集的 SQL。
+     */
     bool execSql(const char * sql, std::string * errorMessage)
     {
         if (m_db == nullptr || sql == nullptr)
@@ -418,6 +490,9 @@ private:
         return true;
     }
 
+    /**
+     * @brief 对单个 topic 执行历史压缩，只保留最近 `m_historyDepth` 条。
+     */
     bool compactTopic(int topic, std::string * errorMessage)
     {
         if (m_db == nullptr || topic <= 0)
@@ -460,6 +535,9 @@ private:
         return true;
     }
 
+    /**
+     * @brief 获取最近 SQLite 错误文本。
+     */
     std::string lastErrorMessage() const
     {
         if (m_db == nullptr || api().sqlite3_errmsg == nullptr)
@@ -471,9 +549,21 @@ private:
     }
 
 private:
+    /**
+     * @brief 数据库连接句柄。
+     */
     sqlite3 * m_db;
+    /**
+     * @brief 当前 domain id。
+     */
     uint32_t m_domainId;
+    /**
+     * @brief 每个 topic 的历史保留深度。
+     */
     size_t m_historyDepth;
+    /**
+     * @brief 数据库文件路径。
+     */
     std::string m_dbPath;
 };
 

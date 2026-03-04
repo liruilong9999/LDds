@@ -1,6 +1,16 @@
 #ifndef LBYTEBUFFER_H
 #define LBYTEBUFFER_H
 
+/**
+ * @file LByteBuffer.h
+ * @brief 二进制字节缓冲区读写工具。
+ *
+ * 特点：
+ * 1. 面向网络协议编解码，统一采用小端序；
+ * 2. 提供顺序写入与顺序读取接口；
+ * 3. 内部自动扩容并维护读写游标。
+ */
+
 #include <cstdint>
 #include <vector>
 #include <stdexcept>

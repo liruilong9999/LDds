@@ -1,6 +1,11 @@
 #ifndef LTCPTRANSPORT_H
 #define LTCPTRANSPORT_H
 
+/**
+ * @file LTcpTransport.h
+ * @brief TCP 传输实现定义（连接管理、发送队列与重连状态机）。
+ */
+
 #include "ITransport.h"
 #include <atomic>
 #include <chrono>

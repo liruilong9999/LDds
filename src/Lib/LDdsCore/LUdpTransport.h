@@ -1,6 +1,11 @@
 #ifndef LUDPTRANSPORT_H
 #define LUDPTRANSPORT_H
 
+/**
+ * @file LUdpTransport.h
+ * @brief UDP 传输实现定义（单播/广播发送与接收线程）。
+ */
+
 #include "ITransport.h"
 #include <atomic>
 #include <cstddef>

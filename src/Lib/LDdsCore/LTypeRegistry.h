@@ -1,6 +1,11 @@
 #ifndef LTYPEREGISTRY_H
 #define LTYPEREGISTRY_H
 
+/**
+ * @file LTypeRegistry.h
+ * @brief 类型系统注册中心（topic 与类型映射、序列化函数注册）。
+ */
+
 #include <cstdint>
 #include <cstring>
 #include <functional>
@@ -29,8 +34,17 @@ namespace LDdsFramework {
 class LDDSCORE_EXPORT LTypeRegistry
 {
 public:
+    /**
+     * @brief 创建对象工厂：返回指定类型实例（以 `std::shared_ptr<void>` 承载）。
+     */
     using TypeFactory = std::function<std::shared_ptr<void>()>;
+    /**
+     * @brief 序列化函数：将对象编码为 payload。
+     */
     using SerializeFn = std::function<bool(const void * object, std::vector<uint8_t> & outPayload)>;
+    /**
+     * @brief 反序列化函数：将 payload 解码到对象实例。
+     */
     using DeserializeFn =
         std::function<bool(const std::vector<uint8_t> & payload, void * object)>;
 
@@ -40,6 +54,15 @@ public:
     LTypeRegistry(const LTypeRegistry & other) = delete;
     LTypeRegistry & operator=(const LTypeRegistry & other) = delete;
 
+    /**
+     * @brief 注册类型与 topic 的完整元信息。
+     * @param typeName 业务类型名（如 `MyPkg::Pose`）。
+     * @param topic 业务 topic id。
+     * @param factory 对象工厂函数。
+     * @param serializer 序列化函数。
+     * @param deserializer 反序列化函数。
+     * @return 注册成功返回 true；若 topic 或 typeName 冲突返回 false。
+     */
     bool registerType(
         const std::string & typeName,
         uint32_t            topic,
@@ -48,6 +71,9 @@ public:
         DeserializeFn       deserializer
     );
 
+    /**
+     * @brief 使用调用方提供的序列化/反序列化 lambda 注册类型。
+     */
     template<typename T, typename Serializer, typename Deserializer>
     bool registerType(
         const std::string & typeName,
@@ -92,6 +118,15 @@ public:
         );
     }
 
+    /**
+     * @brief 使用默认规则注册类型。
+     *
+     * 默认规则：
+     * 1. `std::string`：按字节文本写入/恢复。
+     * 2. `std::vector<uint8_t>`：直接透传。
+     * 3. 可平凡拷贝类型：按内存块原样拷贝。
+     * 4. 其他类型：默认不支持，返回 false。
+     */
     template<typename T>
     bool registerType(const std::string & typeName, uint32_t topic)
     {
@@ -147,6 +182,10 @@ public:
         return registerType<T>(typeName, topic, serializer, deserializer);
     }
 
+    /**
+     * @brief 按 topic 创建对象实例。
+     * @return 成功返回实例；未注册返回空指针。
+     */
     std::shared_ptr<void> createByTopic(uint32_t topic) const;
     /**
      * @brief 通过类型名查询 topic。
@@ -158,24 +197,60 @@ public:
      */
     std::string getTypeNameByTopic(uint32_t topic) const;
 
+    /**
+     * @brief 按 topic 执行序列化。
+     */
     bool serializeByTopic(uint32_t topic, const void * object, std::vector<uint8_t> & outPayload)
         const;
+    /**
+     * @brief 按 topic 执行反序列化。
+     */
     bool deserializeByTopic(uint32_t topic, const std::vector<uint8_t> & payload, void * object)
         const;
+    /**
+     * @brief 判断指定 topic 是否已注册。
+     */
     bool hasTopic(uint32_t topic) const;
 
 private:
+    /**
+     * @brief 单个类型注册项。
+     */
     struct TypeEntry
     {
+        /**
+         * @brief 类型全名。
+         */
         std::string typeName;
+        /**
+         * @brief topic id。
+         */
         uint32_t    topic = 0;
+        /**
+         * @brief 对象工厂。
+         */
         TypeFactory factory;
+        /**
+         * @brief 序列化函数。
+         */
         SerializeFn serializer;
+        /**
+         * @brief 反序列化函数。
+         */
         DeserializeFn deserializer;
     };
 
+    /**
+     * @brief topic -> 类型条目映射。
+     */
     std::unordered_map<uint32_t, std::shared_ptr<TypeEntry>> m_entriesByTopic;
+    /**
+     * @brief typeName -> topic 反向索引。
+     */
     std::unordered_map<std::string, uint32_t>                m_topicByTypeName;
+    /**
+     * @brief 读写锁（读多写少场景）。
+     */
     mutable std::shared_mutex                                m_mutex;
 };
 
