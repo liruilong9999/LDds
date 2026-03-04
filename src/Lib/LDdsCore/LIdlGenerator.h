@@ -25,6 +25,9 @@ enum class TargetLanguage : uint32_t
     Custom     = 255
 };
 
+/**
+ * @brief 代码生成选项。
+ */
 struct GeneratorOptions
 {
     bool        generateComments;
@@ -55,6 +58,9 @@ struct GeneratorOptions
     }
 };
 
+/**
+ * @brief 代码生成结果。
+ */
 struct GenerationResult
 {
     bool                     success;

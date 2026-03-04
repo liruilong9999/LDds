@@ -265,18 +265,31 @@ public:
     bool isCompatibleWith(const LQos & other, std::string & errorMessage) const;
     void merge(const LQos & other);
 
-    // Stage-7 simplified QoS knobs:
-    // - historyDepth: cache depth for each topic, minimum 1
-    // - deadlineMs: deadline timeout in milliseconds, <=0 means disabled
-    // - reliable: reserved flag for future reliable delivery behavior
+    /**
+     * @brief 每个 topic 的历史缓存深度（最小 1）。
+     */
     int32_t historyDepth;
+    /**
+     * @brief 截止时间阈值（毫秒），<=0 表示关闭。
+     */
     int32_t deadlineMs;
+    /**
+     * @brief 可靠性预留开关（阶段 7 预留位）。
+     */
     bool    reliable;
 
+    /**
+     * @brief 传输类型选择（UDP/TCP）。
+     */
     TransportType transportType;
 
-    // QoS XML config (preferred): parse and apply known fields.
+    /**
+     * @brief 从 XML 文件加载 QoS（优先配置方式）。
+     */
     bool loadFromXmlFile(const std::string & filePath, std::string * errorMessage = nullptr);
+    /**
+     * @brief 从 XML 文本加载 QoS。
+     */
     bool loadFromXmlString(const std::string & xmlText, std::string * errorMessage = nullptr);
 
 private:

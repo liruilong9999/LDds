@@ -1,159 +1,19 @@
 #include "LTcpTransport.h"
 #include "LMessage.h"
 
-#include <chrono>
-#include <cstring>
+#include <QAbstractSocket>
+#include <QByteArray>
+#include <QTcpServer>
+#include <QTcpSocket>
+#include <QThread>
 
-#ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#pragma comment(lib, "ws2_32.lib")
-#else
-#include <arpa/inet.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <netinet/in.h>
-#include <sys/select.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#endif
+#include <chrono>
+#include <thread>
 
 namespace LDdsFramework {
 namespace {
 
-#ifdef _WIN32
-using SocketHandle = SOCKET;
-using SockLenType = int;
-constexpr SocketHandle kInvalidSocket = INVALID_SOCKET;
-#else
-using SocketHandle = int;
-using SockLenType = socklen_t;
-constexpr SocketHandle kInvalidSocket = -1;
-#endif
-
-constexpr std::intptr_t kInvalidSocketStorage = static_cast<std::intptr_t>(-1);
 constexpr uint32_t kMaxTcpMessageSize = 10U * 1024U * 1024U;
-
-bool initializeSocketApi()
-{
-#ifdef _WIN32
-    static std::once_flag once;
-    static bool initialized = false;
-    std::call_once(once, [] {
-        WSADATA wsaData {};
-        initialized = (::WSAStartup(MAKEWORD(2, 2), &wsaData) == 0);
-    });
-    return initialized;
-#else
-    return true;
-#endif
-}
-
-SocketHandle toNativeSocket(std::intptr_t stored) noexcept
-{
-    return static_cast<SocketHandle>(stored);
-}
-
-std::intptr_t toStoredSocket(SocketHandle socketFd) noexcept
-{
-    return static_cast<std::intptr_t>(socketFd);
-}
-
-void closeNativeSocket(SocketHandle socketFd)
-{
-    if (socketFd == kInvalidSocket) {
-        return;
-    }
-#ifdef _WIN32
-    ::closesocket(socketFd);
-#else
-    ::close(socketFd);
-#endif
-}
-
-void shutdownNativeSocket(SocketHandle socketFd)
-{
-    if (socketFd == kInvalidSocket) {
-        return;
-    }
-#ifdef _WIN32
-    ::shutdown(socketFd, SD_BOTH);
-#else
-    ::shutdown(socketFd, SHUT_RDWR);
-#endif
-}
-
-int getLastSocketError() noexcept
-{
-#ifdef _WIN32
-    return ::WSAGetLastError();
-#else
-    return errno;
-#endif
-}
-
-bool isInterruptedOrWouldBlock(int errorCode) noexcept
-{
-#ifdef _WIN32
-    return errorCode == WSAEINTR || errorCode == WSAEWOULDBLOCK;
-#else
-    return errorCode == EINTR || errorCode == EAGAIN || errorCode == EWOULDBLOCK;
-#endif
-}
-
-bool setSocketOptionInt(SocketHandle socketFd, int level, int optName, int value)
-{
-    return ::setsockopt(
-               socketFd,
-               level,
-               optName,
-               reinterpret_cast<const char*>(&value),
-               static_cast<SockLenType>(sizeof(value))
-           ) == 0;
-}
-
-bool setSocketNonBlocking(SocketHandle socketFd, bool enable)
-{
-#ifdef _WIN32
-    u_long mode = enable ? 1UL : 0UL;
-    return ::ioctlsocket(socketFd, FIONBIO, &mode) == 0;
-#else
-    const int flags = ::fcntl(socketFd, F_GETFL, 0);
-    if (flags < 0) {
-        return false;
-    }
-    const int newFlags = enable ? (flags | O_NONBLOCK) : (flags & ~O_NONBLOCK);
-    return ::fcntl(socketFd, F_SETFL, newFlags) == 0;
-#endif
-}
-
-bool toSockAddr(const QHostAddress& address, quint16 port, sockaddr_in& output)
-{
-    std::memset(&output, 0, sizeof(output));
-    output.sin_family = AF_INET;
-    output.sin_port = htons(port);
-
-    if (address.isNull() || address == QHostAddress::Any || address == QHostAddress::AnyIPv4) {
-        output.sin_addr.s_addr = htonl(INADDR_ANY);
-        return true;
-    }
-
-    const QByteArray ip = address.toString().toLatin1();
-    return ::inet_pton(AF_INET, ip.constData(), &output.sin_addr) == 1;
-}
-
-QHostAddress fromSockAddr(const sockaddr_in& input)
-{
-    char ipBuffer[INET_ADDRSTRLEN] = {0};
-    const char* result = ::inet_ntop(AF_INET, &input.sin_addr, ipBuffer, sizeof(ipBuffer));
-    if (!result) {
-        return QHostAddress();
-    }
-    return QHostAddress(QString::fromLatin1(ipBuffer));
-}
 
 uint32_t readLeUInt32(const uint8_t* data) noexcept
 {
@@ -163,56 +23,70 @@ uint32_t readLeUInt32(const uint8_t* data) noexcept
            (static_cast<uint32_t>(data[3]) << 24);
 }
 
-bool sendAll(SocketHandle socketFd, const uint8_t* data, size_t size)
+bool sendAll(QTcpSocket& socket, const uint8_t* data, size_t size)
 {
     size_t sentBytes = 0;
+    int idleLoops = 0;
+
     while (sentBytes < size) {
-        const int remaining = static_cast<int>(size - sentBytes);
-        const int chunkSent = ::send(
-            socketFd,
+        const qint64 chunk = socket.write(
             reinterpret_cast<const char*>(data + sentBytes),
-            remaining,
-            0
+            static_cast<qint64>(size - sentBytes)
         );
 
-        if (chunkSent > 0) {
-            sentBytes += static_cast<size_t>(chunkSent);
-            continue;
-        }
-
-        if (chunkSent == 0) {
+        if (chunk < 0) {
             return false;
         }
 
-        const int errorCode = getLastSocketError();
-        if (isInterruptedOrWouldBlock(errorCode)) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        if (chunk == 0) {
+            ++idleLoops;
+            if (idleLoops > 5) {
+                return false;
+            }
+            if (!socket.waitForBytesWritten(200)) {
+                if (socket.state() != QAbstractSocket::ConnectedState) {
+                    return false;
+                }
+            }
             continue;
         }
-        return false;
+
+        idleLoops = 0;
+        sentBytes += static_cast<size_t>(chunk);
+
+        if (socket.bytesToWrite() > 0) {
+            if (!socket.waitForBytesWritten(1000) &&
+                socket.state() != QAbstractSocket::ConnectedState) {
+                return false;
+            }
+        }
     }
+
     return true;
 }
 
 } // namespace
 
 struct LTcpTransport::TcpConnection {
-    TcpConnection(quint64 id,
-                  SocketHandle socket,
-                  const QHostAddress& address,
-                  quint16 port)
-        : connectionId(id)
-        , socketFd(socket)
-        , remoteAddress(address)
-        , remotePort(port)
+    TcpConnection(
+        quint64 connectionIdValue,
+        const std::shared_ptr<QTcpSocket>& socketValue,
+        const QHostAddress& remoteAddressValue,
+        quint16 remotePortValue)
+        : connectionId(connectionIdValue)
+        , socket(socketValue)
+        , remoteAddress(remoteAddressValue)
+        , remotePort(remotePortValue)
+        , receiveBuffer()
         , bytesSent(0)
         , bytesReceived(0)
         , connected(true)
+        , mutex()
     {
     }
 
     quint64 connectionId;
-    SocketHandle socketFd;
+    std::shared_ptr<QTcpSocket> socket;
     QHostAddress remoteAddress;
     quint16 remotePort;
     std::vector<uint8_t> receiveBuffer;
@@ -223,10 +97,20 @@ struct LTcpTransport::TcpConnection {
 };
 
 LTcpTransport::LTcpTransport()
-    : m_listenSocket(kInvalidSocketStorage)
+    : m_server()
+    , m_serverMutex()
+    , m_connections()
+    , m_connectionsMutex()
+    , m_acceptThread()
+    , m_receiveThread()
+    , m_sendThread()
+    , m_sendQueue()
+    , m_sendQueueMutex()
+    , m_sendCondition()
     , m_running(false)
     , m_sendThreadRunning(false)
     , m_nextConnectionId(1)
+    , m_networkThread(nullptr)
 {
 }
 
@@ -256,9 +140,7 @@ bool LTcpTransport::start()
     m_running.store(true);
     m_sendThreadRunning.store(true);
 
-    m_acceptThread = std::thread(&LTcpTransport::acceptThreadFunc, this);
     m_receiveThread = std::thread(&LTcpTransport::receiveThreadFunc, this);
-    m_sendThread = std::thread(&LTcpTransport::sendThreadFunc, this);
 
     setState(TransportState::Running);
     return true;
@@ -277,18 +159,13 @@ void LTcpTransport::stop()
     m_sendThreadRunning.store(false);
     m_sendCondition.notify_all();
 
-    closeServer();
-    disconnectAll();
-
-    if (m_acceptThread.joinable()) {
-        m_acceptThread.join();
-    }
     if (m_receiveThread.joinable()) {
         m_receiveThread.join();
     }
-    if (m_sendThread.joinable()) {
-        m_sendThread.join();
-    }
+
+    m_networkThread.store(nullptr);
+    closeServer();
+    disconnectAll();
 
     {
         std::lock_guard<std::mutex> lock(m_sendQueueMutex);
@@ -318,7 +195,7 @@ bool LTcpTransport::sendMessage(const LMessage& message)
         return false;
     }
 
-    LByteBuffer serialized = message.serialize();
+    const LByteBuffer serialized = message.serialize();
     std::vector<uint8_t> bytes(serialized.data(), serialized.data() + serialized.size());
     return enqueueSendData(std::move(bytes), onlyConnectionId);
 }
@@ -350,7 +227,7 @@ bool LTcpTransport::sendMessageTo(const LMessage& message,
         }
     }
 
-    LByteBuffer serialized = message.serialize();
+    const LByteBuffer serialized = message.serialize();
     std::vector<uint8_t> bytes(serialized.data(), serialized.data() + serialized.size());
     return enqueueSendData(std::move(bytes), connection->connectionId);
 }
@@ -364,7 +241,7 @@ bool LTcpTransport::broadcastMessage(const LMessage& message, quint16 broadcastP
         return false;
     }
 
-    LByteBuffer serialized = message.serialize();
+    const LByteBuffer serialized = message.serialize();
     std::vector<uint8_t> bytes(serialized.data(), serialized.data() + serialized.size());
     return enqueueSendData(std::move(bytes), 0);
 }
@@ -376,41 +253,41 @@ bool LTcpTransport::connectToHost(const QHostAddress& address, quint16 port)
         return false;
     }
 
-    if (!initializeSocketApi()) {
-        setError(QStringLiteral("Socket subsystem initialization failed"));
-        return false;
-    }
-
-    sockaddr_in remoteAddr {};
-    if (!toSockAddr(address, port, remoteAddr)) {
-        setError(QStringLiteral("Remote address must be valid IPv4"));
-        return false;
-    }
-
-    SocketHandle socketFd = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (socketFd == kInvalidSocket) {
-        setError(QStringLiteral("Failed to create TCP socket, error code=%1").arg(getLastSocketError()));
-        return false;
-    }
+    auto socket = std::make_shared<QTcpSocket>();
 
     const TransportConfig config = getConfig();
     if (config.receiveBufferSize > 0) {
-        setSocketOptionInt(socketFd, SOL_SOCKET, SO_RCVBUF, config.receiveBufferSize);
+        socket->setSocketOption(
+            QAbstractSocket::ReceiveBufferSizeSocketOption,
+            config.receiveBufferSize
+        );
     }
     if (config.sendBufferSize > 0) {
-        setSocketOptionInt(socketFd, SOL_SOCKET, SO_SNDBUF, config.sendBufferSize);
+        socket->setSocketOption(
+            QAbstractSocket::SendBufferSizeSocketOption,
+            config.sendBufferSize
+        );
     }
 
-    if (::connect(socketFd, reinterpret_cast<sockaddr*>(&remoteAddr), sizeof(remoteAddr)) != 0) {
-        closeNativeSocket(socketFd);
-        setError(QStringLiteral("TCP connect failed, error code=%1").arg(getLastSocketError()));
+    socket->connectToHost(address, port);
+    if (!socket->waitForConnected(3000)) {
+        setError(QStringLiteral("TCP connect failed: %1").arg(socket->errorString()));
         return false;
     }
 
-    setSocketNonBlocking(socketFd, true);
+    QThread* networkThread = m_networkThread.load();
+    for (int i = 0; i < 20 && networkThread == nullptr; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        networkThread = m_networkThread.load();
+    }
+    if (networkThread != nullptr && socket->thread() != networkThread) {
+        socket->moveToThread(networkThread);
+    }
 
-    if (addConnection(socketFd, address, port) == 0) {
-        closeNativeSocket(socketFd);
+    if (addConnection(socket, address, port) == 0) {
+        socket->disconnectFromHost();
+        socket->close();
+        setError(QStringLiteral("Connection limit reached"));
         return false;
     }
 
@@ -461,117 +338,49 @@ bool LTcpTransport::getConnectionStats(quint64 connectionId,
 
 bool LTcpTransport::initializeServer()
 {
-    if (!initializeSocketApi()) {
-        setError(QStringLiteral("Socket subsystem initialization failed"));
-        return false;
-    }
-
     const TransportConfig config = getConfig();
 
-    SocketHandle socketFd = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    if (socketFd == kInvalidSocket) {
-        setError(QStringLiteral("Failed to create TCP listen socket, error code=%1").arg(getLastSocketError()));
-        return false;
-    }
-
-    if (config.reuseAddress) {
-        setSocketOptionInt(socketFd, SOL_SOCKET, SO_REUSEADDR, 1);
-    }
-
-    sockaddr_in localAddr {};
-    const QHostAddress bindAddress = config.bindAddress.isEmpty()
-        ? QHostAddress::Any
+    QHostAddress bindAddress = config.bindAddress.isEmpty()
+        ? QHostAddress::AnyIPv4
         : QHostAddress(config.bindAddress);
-
-    if (!toSockAddr(bindAddress, config.bindPort, localAddr)) {
-        closeNativeSocket(socketFd);
-        setError(QStringLiteral("Bind address must be valid IPv4"));
+    if (bindAddress.isNull()) {
+        setError(QStringLiteral("Bind address must be valid"));
         return false;
     }
 
-    if (::bind(socketFd, reinterpret_cast<sockaddr*>(&localAddr), sizeof(localAddr)) != 0) {
-        closeNativeSocket(socketFd);
-        setError(QStringLiteral("TCP bind failed, error code=%1").arg(getLastSocketError()));
+    auto server = std::make_shared<QTcpServer>();
+    if (!server->listen(bindAddress, config.bindPort)) {
+        setError(QStringLiteral("TCP listen failed: %1").arg(server->errorString()));
         return false;
     }
 
-    const int backlog = config.maxConnections > 0 ? config.maxConnections : 1;
-    if (::listen(socketFd, backlog) != 0) {
-        closeNativeSocket(socketFd);
-        setError(QStringLiteral("TCP listen failed, error code=%1").arg(getLastSocketError()));
-        return false;
+    setBoundPort(server->serverPort());
+    {
+        std::lock_guard<std::mutex> lock(m_serverMutex);
+        m_server = std::move(server);
     }
 
-    setSocketNonBlocking(socketFd, true);
-
-    sockaddr_in actualAddr {};
-    SockLenType actualLen = static_cast<SockLenType>(sizeof(actualAddr));
-    if (::getsockname(socketFd, reinterpret_cast<sockaddr*>(&actualAddr), &actualLen) == 0) {
-        setBoundPort(ntohs(actualAddr.sin_port));
-    } else {
-        setBoundPort(config.bindPort);
-    }
-
-    m_listenSocket.store(toStoredSocket(socketFd));
     return true;
 }
 
 void LTcpTransport::closeServer()
 {
-    const std::intptr_t stored = m_listenSocket.exchange(kInvalidSocketStorage);
-    if (stored != kInvalidSocketStorage) {
-        const SocketHandle socketFd = toNativeSocket(stored);
-        shutdownNativeSocket(socketFd);
-        closeNativeSocket(socketFd);
+    std::shared_ptr<QTcpServer> server;
+    {
+        std::lock_guard<std::mutex> lock(m_serverMutex);
+        server = std::move(m_server);
+    }
+
+    if (server) {
+        server->close();
     }
     setBoundPort(0);
 }
 
 void LTcpTransport::acceptThreadFunc()
 {
-    while (m_running.load()) {
-        const SocketHandle listenSocket = toNativeSocket(m_listenSocket.load());
-        if (listenSocket == kInvalidSocket) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
-            continue;
-        }
-
-        fd_set readSet;
-        FD_ZERO(&readSet);
-        FD_SET(listenSocket, &readSet);
-
-        timeval timeout {};
-        timeout.tv_sec = 0;
-        timeout.tv_usec = 200 * 1000;
-
-        const int ready = ::select(static_cast<int>(listenSocket) + 1, &readSet, nullptr, nullptr, &timeout);
-        if (!m_running.load()) {
-            break;
-        }
-
-        if (ready <= 0) {
-            continue;
-        }
-
-        sockaddr_in remoteAddr {};
-        SockLenType remoteLen = static_cast<SockLenType>(sizeof(remoteAddr));
-        SocketHandle clientSocket = ::accept(
-            listenSocket,
-            reinterpret_cast<sockaddr*>(&remoteAddr),
-            &remoteLen
-        );
-
-        if (clientSocket == kInvalidSocket) {
-            continue;
-        }
-
-        setSocketNonBlocking(clientSocket, true);
-        const QHostAddress remoteAddress = fromSockAddr(remoteAddr);
-        const quint16 remotePort = ntohs(remoteAddr.sin_port);
-        if (addConnection(clientSocket, remoteAddress, remotePort) == 0) {
-            closeNativeSocket(clientSocket);
-        }
-    }
+    // The TCP accept path is integrated into receiveThreadFunc() so that
+    // all QTcpServer/QTcpSocket operations run on a single thread.
 }
 
 void LTcpTransport::receiveThreadFunc()
@@ -579,23 +388,86 @@ void LTcpTransport::receiveThreadFunc()
     struct SocketEntry {
         quint64 connectionId;
         ConnectionPtr connection;
-        SocketHandle socketFd;
     };
 
-    std::vector<uint8_t> readBuffer(64 * 1024);
+    m_networkThread.store(QThread::currentThread());
+
+    std::shared_ptr<QTcpServer> server;
+    {
+        std::lock_guard<std::mutex> lock(m_serverMutex);
+        server = m_server;
+    }
+    if (server && server->thread() != QThread::currentThread()) {
+        server->moveToThread(QThread::currentThread());
+    }
 
     while (m_running.load()) {
+        if (server && server->waitForNewConnection(5)) {
+            while (server->hasPendingConnections()) {
+                QTcpSocket* pending = server->nextPendingConnection();
+                if (!pending) {
+                    break;
+                }
+
+                pending->setParent(nullptr);
+                std::shared_ptr<QTcpSocket> socket(pending);
+
+                const TransportConfig config = getConfig();
+                if (config.receiveBufferSize > 0) {
+                    socket->setSocketOption(
+                        QAbstractSocket::ReceiveBufferSizeSocketOption,
+                        config.receiveBufferSize
+                    );
+                }
+                if (config.sendBufferSize > 0) {
+                    socket->setSocketOption(
+                        QAbstractSocket::SendBufferSizeSocketOption,
+                        config.sendBufferSize
+                    );
+                }
+
+                if (addConnection(socket, socket->peerAddress(), socket->peerPort()) == 0) {
+                    socket->disconnectFromHost();
+                    socket->close();
+                }
+            }
+        }
+
+        {
+            std::queue<SendTask> localQueue;
+            {
+                std::lock_guard<std::mutex> lock(m_sendQueueMutex);
+                std::swap(localQueue, m_sendQueue);
+            }
+
+            while (!localQueue.empty()) {
+                SendTask task = std::move(localQueue.front());
+                localQueue.pop();
+
+                if (task.connectionId == 0) {
+                    std::vector<quint64> ids;
+                    {
+                        std::lock_guard<std::mutex> lock(m_connectionsMutex);
+                        ids.reserve(m_connections.size());
+                        for (const auto& pair : m_connections) {
+                            ids.push_back(pair.first);
+                        }
+                    }
+                    for (const quint64 id : ids) {
+                        sendToConnection(id, task.data);
+                    }
+                } else {
+                    sendToConnection(task.connectionId, task.data);
+                }
+            }
+        }
+
         std::vector<SocketEntry> entries;
         {
             std::lock_guard<std::mutex> lock(m_connectionsMutex);
             entries.reserve(m_connections.size());
             for (const auto& pair : m_connections) {
-                const ConnectionPtr& connection = pair.second;
-                std::lock_guard<std::mutex> connLock(connection->mutex);
-                if (!connection->connected.load() || connection->socketFd == kInvalidSocket) {
-                    continue;
-                }
-                entries.push_back({pair.first, connection, connection->socketFd});
+                entries.push_back({pair.first, pair.second});
             }
         }
 
@@ -604,67 +476,63 @@ void LTcpTransport::receiveThreadFunc()
             continue;
         }
 
-        fd_set readSet;
-        FD_ZERO(&readSet);
-
-        SocketHandle maxFd = 0;
-        for (const SocketEntry& entry : entries) {
-            FD_SET(entry.socketFd, &readSet);
-            if (entry.socketFd > maxFd) {
-                maxFd = entry.socketFd;
-            }
-        }
-
-        timeval timeout {};
-        timeout.tv_sec = 0;
-        timeout.tv_usec = 200 * 1000;
-
-        const int ready = ::select(static_cast<int>(maxFd) + 1, &readSet, nullptr, nullptr, &timeout);
-        if (!m_running.load()) {
-            break;
-        }
-
-        if (ready <= 0) {
-            continue;
-        }
+        bool hadData = false;
 
         for (const SocketEntry& entry : entries) {
-            if (!FD_ISSET(entry.socketFd, &readSet)) {
-                continue;
-            }
+            QByteArray incoming;
+            bool shouldRemove = false;
 
-            const int recvBytes = ::recv(
-                entry.socketFd,
-                reinterpret_cast<char*>(readBuffer.data()),
-                static_cast<int>(readBuffer.size()),
-                0
-            );
+            {
+                std::lock_guard<std::mutex> connLock(entry.connection->mutex);
+                if (!entry.connection->connected.load() || !entry.connection->socket) {
+                    shouldRemove = true;
+                } else {
+                    QTcpSocket& socket = *entry.connection->socket;
 
-            if (recvBytes > 0) {
-                {
-                    std::lock_guard<std::mutex> connLock(entry.connection->mutex);
-                    entry.connection->receiveBuffer.insert(
-                        entry.connection->receiveBuffer.end(),
-                        readBuffer.begin(),
-                        readBuffer.begin() + recvBytes
-                    );
-                    entry.connection->bytesReceived.fetch_add(static_cast<uint64_t>(recvBytes));
+                    if (socket.bytesAvailable() <= 0) {
+                        socket.waitForReadyRead(10);
+                    }
+
+                    if (socket.bytesAvailable() > 0) {
+                        incoming = socket.readAll();
+                        while (socket.bytesAvailable() > 0) {
+                            incoming.append(socket.readAll());
+                        }
+                    } else if (socket.state() != QAbstractSocket::ConnectedState) {
+                        shouldRemove = true;
+                    }
                 }
-                processConnectionBuffer(entry.connection);
-                continue;
             }
 
-            if (recvBytes == 0) {
+            if (shouldRemove) {
                 removeConnection(entry.connectionId);
                 continue;
             }
 
-            const int errorCode = getLastSocketError();
-            if (!isInterruptedOrWouldBlock(errorCode)) {
-                removeConnection(entry.connectionId);
+            if (incoming.isEmpty()) {
+                continue;
             }
+
+            hadData = true;
+            {
+                std::lock_guard<std::mutex> connLock(entry.connection->mutex);
+                entry.connection->receiveBuffer.insert(
+                    entry.connection->receiveBuffer.end(),
+                    reinterpret_cast<const uint8_t*>(incoming.constData()),
+                    reinterpret_cast<const uint8_t*>(incoming.constData()) + incoming.size()
+                );
+                entry.connection->bytesReceived.fetch_add(static_cast<uint64_t>(incoming.size()));
+            }
+
+            processConnectionBuffer(entry.connection);
+        }
+
+        if (!hadData) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
         }
     }
+
+    m_networkThread.store(nullptr);
 }
 
 void LTcpTransport::sendThreadFunc()
@@ -732,16 +600,17 @@ bool LTcpTransport::sendToConnection(quint64 connectionId, const std::vector<uin
     bool shouldRemove = false;
     {
         std::lock_guard<std::mutex> connLock(connection->mutex);
-        if (!connection->connected.load() || connection->socketFd == kInvalidSocket) {
+        if (!connection->connected.load() || !connection->socket) {
             shouldRemove = true;
-        } else if (sendAll(connection->socketFd, data.data(), data.size())) {
+        } else if (connection->socket->state() != QAbstractSocket::ConnectedState) {
+            shouldRemove = true;
+        } else if (sendAll(*connection->socket, data.data(), data.size())) {
             connection->bytesSent.fetch_add(static_cast<uint64_t>(data.size()));
             return true;
         } else {
             connection->connected.store(false);
-            shutdownNativeSocket(connection->socketFd);
-            closeNativeSocket(connection->socketFd);
-            connection->socketFd = kInvalidSocket;
+            connection->socket->disconnectFromHost();
+            connection->socket->close();
             shouldRemove = true;
         }
     }
@@ -752,12 +621,11 @@ bool LTcpTransport::sendToConnection(quint64 connectionId, const std::vector<uin
     return false;
 }
 
-quint64 LTcpTransport::addConnection(std::intptr_t socketFdStored,
+quint64 LTcpTransport::addConnection(const std::shared_ptr<QTcpSocket>& socket,
                                      const QHostAddress& remoteAddress,
                                      quint16 remotePort)
 {
-    const SocketHandle socketFd = toNativeSocket(socketFdStored);
-    if (socketFd == kInvalidSocket) {
+    if (!socket) {
         return 0;
     }
 
@@ -769,7 +637,7 @@ quint64 LTcpTransport::addConnection(std::intptr_t socketFdStored,
     const quint64 connectionId = m_nextConnectionId.fetch_add(1);
     const ConnectionPtr connection = std::make_shared<TcpConnection>(
         connectionId,
-        socketFd,
+        socket,
         remoteAddress,
         remotePort
     );
@@ -800,10 +668,10 @@ void LTcpTransport::removeConnection(quint64 connectionId)
 
     std::lock_guard<std::mutex> connLock(connection->mutex);
     connection->connected.store(false);
-    if (connection->socketFd != kInvalidSocket) {
-        shutdownNativeSocket(connection->socketFd);
-        closeNativeSocket(connection->socketFd);
-        connection->socketFd = kInvalidSocket;
+    if (connection->socket) {
+        connection->socket->disconnectFromHost();
+        connection->socket->close();
+        connection->socket.reset();
     }
 }
 

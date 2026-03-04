@@ -1,147 +1,29 @@
 #include "LUdpTransport.h"
 #include "LMessage.h"
 
+#include <QAbstractSocket>
+#include <QByteArray>
+#include <QUdpSocket>
+
 #include <chrono>
-#include <cstring>
+#include <thread>
+#include <utility>
 #include <vector>
 
-#ifdef _WIN32
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#pragma comment(lib, "ws2_32.lib")
-#else
-#include <arpa/inet.h>
-#include <errno.h>
-#include <netinet/in.h>
-#include <sys/select.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#endif
-
 namespace LDdsFramework {
-namespace {
-
-#ifdef _WIN32
-using SocketHandle = SOCKET;
-using SockLenType = int;
-constexpr SocketHandle kInvalidSocket = INVALID_SOCKET;
-#else
-using SocketHandle = int;
-using SockLenType = socklen_t;
-constexpr SocketHandle kInvalidSocket = -1;
-#endif
-
-constexpr std::intptr_t kInvalidSocketStorage = static_cast<std::intptr_t>(-1);
-
-bool initializeSocketApi()
-{
-#ifdef _WIN32
-    static std::once_flag once;
-    static bool initialized = false;
-    std::call_once(once, [] {
-        WSADATA wsaData {};
-        initialized = (::WSAStartup(MAKEWORD(2, 2), &wsaData) == 0);
-    });
-    return initialized;
-#else
-    return true;
-#endif
-}
-
-SocketHandle toNativeSocket(std::intptr_t stored) noexcept
-{
-    return static_cast<SocketHandle>(stored);
-}
-
-std::intptr_t toStoredSocket(SocketHandle socketFd) noexcept
-{
-    return static_cast<std::intptr_t>(socketFd);
-}
-
-void closeNativeSocket(SocketHandle socketFd)
-{
-    if (socketFd == kInvalidSocket) {
-        return;
-    }
-#ifdef _WIN32
-    ::closesocket(socketFd);
-#else
-    ::close(socketFd);
-#endif
-}
-
-int getLastSocketError() noexcept
-{
-#ifdef _WIN32
-    return ::WSAGetLastError();
-#else
-    return errno;
-#endif
-}
-
-bool isInterruptedOrWouldBlock(int errorCode) noexcept
-{
-#ifdef _WIN32
-    return errorCode == WSAEINTR || errorCode == WSAEWOULDBLOCK;
-#else
-    return errorCode == EINTR || errorCode == EAGAIN || errorCode == EWOULDBLOCK;
-#endif
-}
-
-bool setSocketOptionInt(SocketHandle socketFd, int level, int optName, int value)
-{
-    return ::setsockopt(
-               socketFd,
-               level,
-               optName,
-               reinterpret_cast<const char*>(&value),
-               static_cast<SockLenType>(sizeof(value))
-           ) == 0;
-}
-
-bool toSockAddr(const QHostAddress& address, quint16 port, sockaddr_in& output)
-{
-    std::memset(&output, 0, sizeof(output));
-    output.sin_family = AF_INET;
-    output.sin_port = htons(port);
-
-    if (address.isNull() || address == QHostAddress::Any || address == QHostAddress::AnyIPv4) {
-        output.sin_addr.s_addr = htonl(INADDR_ANY);
-        return true;
-    }
-
-    if (address == QHostAddress::Broadcast) {
-        output.sin_addr.s_addr = htonl(INADDR_BROADCAST);
-        return true;
-    }
-
-    const QByteArray ip = address.toString().toLatin1();
-    return ::inet_pton(AF_INET, ip.constData(), &output.sin_addr) == 1;
-}
-
-QHostAddress fromSockAddr(const sockaddr_in& input)
-{
-    char ipBuffer[INET_ADDRSTRLEN] = {0};
-    const char* result = ::inet_ntop(AF_INET, &input.sin_addr, ipBuffer, sizeof(ipBuffer));
-    if (!result) {
-        return QHostAddress();
-    }
-    return QHostAddress(QString::fromLatin1(ipBuffer));
-}
-
-} // namespace
 
 LUdpTransport::LUdpTransport()
-    : m_socket(kInvalidSocketStorage)
+    : m_receiveSocket()
+    , m_sendSocket()
+    , m_receiveThread()
     , m_running(false)
     , m_maxPacketSize(65507)
     , m_sentPacketCount(0)
     , m_recvPacketCount(0)
     , m_sentByteCount(0)
     , m_recvByteCount(0)
+    , m_receiveSocketMutex()
+    , m_sendSocketMutex()
 {
 }
 
@@ -219,42 +101,30 @@ bool LUdpTransport::sendMessageTo(const LMessage& message,
         return false;
     }
 
-    LByteBuffer serialized = message.serialize();
+    const LByteBuffer serialized = message.serialize();
     if (serialized.size() > m_maxPacketSize.load()) {
         setError(QStringLiteral("UDP packet exceeds max packet size"));
         return false;
     }
 
-    sockaddr_in remoteAddr {};
-    if (!toSockAddr(targetAddress, targetPort, remoteAddr)) {
-        setError(QStringLiteral("Target address must be valid IPv4"));
-        return false;
-    }
-
-    SocketHandle socketFd = kInvalidSocket;
+    qint64 sentBytes = -1;
     {
-        std::lock_guard<std::mutex> lock(m_socketMutex);
-        socketFd = toNativeSocket(m_socket);
-    }
+        std::lock_guard<std::mutex> lock(m_sendSocketMutex);
+        if (!m_sendSocket) {
+            setError(QStringLiteral("UDP socket is not initialized"));
+            return false;
+        }
 
-    if (socketFd == kInvalidSocket) {
-        setError(QStringLiteral("UDP socket is not initialized"));
-        return false;
-    }
-
-    const int dataSize = static_cast<int>(serialized.size());
-    const int sentBytes = ::sendto(
-        socketFd,
-        reinterpret_cast<const char*>(serialized.data()),
-        dataSize,
-        0,
-        reinterpret_cast<sockaddr*>(&remoteAddr),
-        static_cast<SockLenType>(sizeof(remoteAddr))
-    );
-
-    if (sentBytes < 0) {
-        setError(QStringLiteral("UDP send failed, error code=%1").arg(getLastSocketError()));
-        return false;
+        sentBytes = m_sendSocket->writeDatagram(
+            reinterpret_cast<const char*>(serialized.data()),
+            static_cast<qint64>(serialized.size()),
+            targetAddress,
+            targetPort
+        );
+        if (sentBytes != static_cast<qint64>(serialized.size())) {
+            setError(QStringLiteral("UDP send failed: %1").arg(m_sendSocket->errorString()));
+            return false;
+        }
     }
 
     m_sentPacketCount.fetch_add(1);
@@ -287,18 +157,7 @@ bool LUdpTransport::setBroadcastEnabled(bool enable)
     TransportConfig config = getConfig();
     config.enableBroadcast = enable;
     setConfig(config);
-
-    SocketHandle socketFd = kInvalidSocket;
-    {
-        std::lock_guard<std::mutex> lock(m_socketMutex);
-        socketFd = toNativeSocket(m_socket);
-    }
-
-    if (socketFd == kInvalidSocket) {
-        return true;
-    }
-
-    return setSocketOptionInt(socketFd, SOL_SOCKET, SO_BROADCAST, enable ? 1 : 0);
+    return true;
 }
 
 bool LUdpTransport::isBroadcastEnabled() const
@@ -329,136 +188,136 @@ uint64_t LUdpTransport::getReceivedByteCount() const noexcept
 void LUdpTransport::receiveThreadFunc()
 {
     while (m_running.load()) {
-        SocketHandle socketFd = kInvalidSocket;
+        std::vector<LMessage> readyMessages;
+        std::vector<std::pair<QHostAddress, quint16>> endpoints;
+
         {
-            std::lock_guard<std::mutex> lock(m_socketMutex);
-            socketFd = toNativeSocket(m_socket);
-        }
-
-        if (socketFd == kInvalidSocket) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
-            continue;
-        }
-
-        fd_set readSet;
-        FD_ZERO(&readSet);
-        FD_SET(socketFd, &readSet);
-
-        timeval timeout {};
-        timeout.tv_sec = 0;
-        timeout.tv_usec = 200 * 1000;
-
-        const int ready = ::select(static_cast<int>(socketFd) + 1, &readSet, nullptr, nullptr, &timeout);
-        if (!m_running.load()) {
-            break;
-        }
-
-        if (ready <= 0) {
-            continue;
-        }
-
-        std::vector<uint8_t> packetBuffer(m_maxPacketSize.load() + 1);
-        sockaddr_in senderAddr {};
-        SockLenType senderLen = static_cast<SockLenType>(sizeof(senderAddr));
-
-        const int recvBytes = ::recvfrom(
-            socketFd,
-            reinterpret_cast<char*>(packetBuffer.data()),
-            static_cast<int>(packetBuffer.size()),
-            0,
-            reinterpret_cast<sockaddr*>(&senderAddr),
-            &senderLen
-        );
-
-        if (recvBytes <= 0) {
-            const int errorCode = getLastSocketError();
-            if (!isInterruptedOrWouldBlock(errorCode) && m_running.load()) {
-                setError(QStringLiteral("UDP receive failed, error code=%1").arg(errorCode));
+            std::unique_lock<std::mutex> lock(m_receiveSocketMutex);
+            QUdpSocket* socket = m_receiveSocket.get();
+            if (!socket) {
+                lock.unlock();
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+                continue;
             }
-            continue;
+
+            const bool ready = socket->waitForReadyRead(200);
+            if (!m_running.load()) {
+                break;
+            }
+
+            if (!ready) {
+                continue;
+            }
+
+            while (socket->hasPendingDatagrams()) {
+                const qint64 pendingSize = socket->pendingDatagramSize();
+                if (pendingSize <= 0) {
+                    break;
+                }
+
+                QByteArray packet;
+                packet.resize(static_cast<int>(pendingSize));
+
+                QHostAddress senderAddress;
+                quint16 senderPort = 0;
+                const qint64 recvBytes = socket->readDatagram(
+                    packet.data(),
+                    packet.size(),
+                    &senderAddress,
+                    &senderPort
+                );
+
+                if (recvBytes <= 0) {
+                    continue;
+                }
+
+                const size_t packetSize = static_cast<size_t>(recvBytes);
+                if (packetSize > m_maxPacketSize.load()) {
+                    continue;
+                }
+
+                LMessage message;
+                if (!message.deserialize(
+                        reinterpret_cast<const uint8_t*>(packet.constData()),
+                        packetSize)) {
+                    continue;
+                }
+
+                message.setSenderAddress(senderAddress);
+                message.setSenderPort(senderPort);
+
+                m_recvPacketCount.fetch_add(1);
+                m_recvByteCount.fetch_add(static_cast<uint64_t>(packetSize));
+                readyMessages.push_back(std::move(message));
+                endpoints.emplace_back(senderAddress, senderPort);
+            }
         }
 
-        const size_t packetSize = static_cast<size_t>(recvBytes);
-        if (packetSize > m_maxPacketSize.load()) {
-            // Truncated/oversized datagrams are rejected in this stage.
-            continue;
+        for (size_t i = 0; i < readyMessages.size(); ++i) {
+            notifyReceiveCallback(readyMessages[i], endpoints[i].first, endpoints[i].second);
         }
-
-        LMessage message;
-        if (!message.deserialize(packetBuffer.data(), packetSize)) {
-            continue;
-        }
-
-        const QHostAddress senderAddress = fromSockAddr(senderAddr);
-        const quint16 senderPort = ntohs(senderAddr.sin_port);
-        message.setSenderAddress(senderAddress);
-        message.setSenderPort(senderPort);
-
-        m_recvPacketCount.fetch_add(1);
-        m_recvByteCount.fetch_add(static_cast<uint64_t>(packetSize));
-        notifyReceiveCallback(message, senderAddress, senderPort);
     }
 }
 
 bool LUdpTransport::initializeSocket()
 {
-    if (!initializeSocketApi()) {
-        setError(QStringLiteral("Socket subsystem initialization failed"));
-        return false;
-    }
-
     const TransportConfig config = getConfig();
 
-    SocketHandle socketFd = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (socketFd == kInvalidSocket) {
-        setError(QStringLiteral("Failed to create UDP socket, error code=%1").arg(getLastSocketError()));
+    QHostAddress bindAddress = config.bindAddress.isEmpty()
+        ? QHostAddress::AnyIPv4
+        : QHostAddress(config.bindAddress);
+    if (bindAddress.isNull()) {
+        setError(QStringLiteral("Bind address must be valid"));
         return false;
     }
 
-    if (config.reuseAddress) {
-        setSocketOptionInt(socketFd, SOL_SOCKET, SO_REUSEADDR, 1);
-    }
+    auto receiveSocket = std::make_unique<QUdpSocket>();
+    auto sendSocket = std::make_unique<QUdpSocket>();
 
     if (config.receiveBufferSize > 0) {
-        setSocketOptionInt(socketFd, SOL_SOCKET, SO_RCVBUF, config.receiveBufferSize);
+        receiveSocket->setSocketOption(
+            QAbstractSocket::ReceiveBufferSizeSocketOption,
+            config.receiveBufferSize
+        );
+        sendSocket->setSocketOption(
+            QAbstractSocket::ReceiveBufferSizeSocketOption,
+            config.receiveBufferSize
+        );
     }
 
     if (config.sendBufferSize > 0) {
-        setSocketOptionInt(socketFd, SOL_SOCKET, SO_SNDBUF, config.sendBufferSize);
+        receiveSocket->setSocketOption(
+            QAbstractSocket::SendBufferSizeSocketOption,
+            config.sendBufferSize
+        );
+        sendSocket->setSocketOption(
+            QAbstractSocket::SendBufferSizeSocketOption,
+            config.sendBufferSize
+        );
     }
 
-    if (config.enableBroadcast) {
-        setSocketOptionInt(socketFd, SOL_SOCKET, SO_BROADCAST, 1);
+    QAbstractSocket::BindMode bindMode = QAbstractSocket::DefaultForPlatform;
+    if (config.reuseAddress) {
+        bindMode = QAbstractSocket::ShareAddress | QAbstractSocket::ReuseAddressHint;
     }
 
-    const QHostAddress bindAddress = config.bindAddress.isEmpty()
-        ? QHostAddress::Any
-        : QHostAddress(config.bindAddress);
-
-    sockaddr_in localAddr {};
-    if (!toSockAddr(bindAddress, config.bindPort, localAddr)) {
-        closeNativeSocket(socketFd);
-        setError(QStringLiteral("Bind address must be valid IPv4"));
+    if (!receiveSocket->bind(bindAddress, config.bindPort, bindMode)) {
+        setError(QStringLiteral("UDP bind failed: %1").arg(receiveSocket->errorString()));
         return false;
     }
 
-    if (::bind(socketFd, reinterpret_cast<sockaddr*>(&localAddr), sizeof(localAddr)) != 0) {
-        closeNativeSocket(socketFd);
-        setError(QStringLiteral("UDP bind failed, error code=%1").arg(getLastSocketError()));
+    if (!sendSocket->bind(QHostAddress::AnyIPv4, 0, bindMode)) {
+        setError(QStringLiteral("UDP send socket bind failed: %1").arg(sendSocket->errorString()));
         return false;
     }
 
-    sockaddr_in actualAddr {};
-    SockLenType actualLen = static_cast<SockLenType>(sizeof(actualAddr));
-    if (::getsockname(socketFd, reinterpret_cast<sockaddr*>(&actualAddr), &actualLen) == 0) {
-        setBoundPort(ntohs(actualAddr.sin_port));
-    } else {
-        setBoundPort(config.bindPort);
-    }
+    setBoundPort(receiveSocket->localPort());
 
     {
-        std::lock_guard<std::mutex> lock(m_socketMutex);
-        m_socket = toStoredSocket(socketFd);
+        std::lock_guard<std::mutex> recvLock(m_receiveSocketMutex);
+        std::lock_guard<std::mutex> sendLock(m_sendSocketMutex);
+        m_receiveSocket = std::move(receiveSocket);
+        m_sendSocket = std::move(sendSocket);
     }
 
     return true;
@@ -466,16 +325,22 @@ bool LUdpTransport::initializeSocket()
 
 void LUdpTransport::closeSocket()
 {
-    SocketHandle socketFd = kInvalidSocket;
+    std::unique_ptr<QUdpSocket> receiveSocket;
+    std::unique_ptr<QUdpSocket> sendSocket;
     {
-        std::lock_guard<std::mutex> lock(m_socketMutex);
-        if (m_socket != kInvalidSocketStorage) {
-            socketFd = toNativeSocket(m_socket);
-            m_socket = kInvalidSocketStorage;
-        }
+        std::lock_guard<std::mutex> recvLock(m_receiveSocketMutex);
+        std::lock_guard<std::mutex> sendLock(m_sendSocketMutex);
+        receiveSocket = std::move(m_receiveSocket);
+        sendSocket = std::move(m_sendSocket);
     }
 
-    closeNativeSocket(socketFd);
+    if (receiveSocket) {
+        receiveSocket->close();
+    }
+    if (sendSocket) {
+        sendSocket->close();
+    }
+
     setBoundPort(0);
 }
 

@@ -1,9 +1,6 @@
 /**
  * @file LDomain.h
- * @brief DDS域管理组件
- *
- * 提供DDS域的创建、管理和销毁功能。
- * 域是DDS实体通信的隔离边界，不同域的实体无法直接通信。
+ * @brief DDS Domain 与历史缓存管理接口。
  */
 
 #pragma once
@@ -14,168 +11,165 @@
 #include <mutex>
 #include <string>
 #include <vector>
-#include "LFindSet.h"
+
 #include "LDds_Global.h"
+#include "LFindSet.h"
 
 namespace LDdsFramework {
 
-// 前向声明
 class LQos;
 class LParticipant;
 
 /**
- * @brief 域标识符类型
+ * @brief Domain 标识类型。
  */
 using DomainId = uint32_t;
 
 /**
- * @brief 无效域ID常量
+ * @brief 无效 Domain ID。
  */
 constexpr DomainId INVALID_DOMAIN_ID = static_cast<DomainId>(-1);
 
 /**
- * @brief 默认域ID常量
+ * @brief 默认 Domain ID。
  */
 constexpr DomainId DEFAULT_DOMAIN_ID = 0;
 
 /**
  * @class LDomain
- * @brief DDS域管理类
+ * @brief 管理 Domain 生命周期与 topic 历史缓存。
  *
- * 管理DDS域的生命周期，提供域内实体的创建和管理接口。
- * 每个域实例代表一个独立的DDS通信域。
+ * 该类在阶段 4 中承担缓存层职责：
+ * - 每个 topic 保存最近 N 条序列化数据
+ * - 提供线程安全写入与读取
+ * - 提供快照遍历能力（LFindSet）
  */
 class LDDSCORE_EXPORT LDomain final
 {
 public:
     /**
-     * @brief 默认构造函数
-     *
-     * 创建一个未初始化的域实例。
-     * 必须调用create()后才能使用。
+     * @brief 构造未初始化的 Domain。
      */
     LDomain() noexcept;
 
     /**
-     * @brief 析构函数
-     *
-     * 自动销毁域并释放相关资源。
+     * @brief 析构函数。
      */
     ~LDomain() noexcept;
 
-    /**
-     * @brief 禁止拷贝构造
-     */
-    LDomain(const LDomain & other) = delete;
+    LDomain(const LDomain& other) = delete;
+    LDomain& operator=(const LDomain& other) = delete;
 
     /**
-     * @brief 禁止拷贝赋值
+     * @brief 移动构造。
      */
-    LDomain & operator=(const LDomain & other) = delete;
+    LDomain(LDomain&& other) noexcept;
 
     /**
-     * @brief 允许移动构造
+     * @brief 移动赋值。
      */
-    LDomain(LDomain && other) noexcept;
+    LDomain& operator=(LDomain&& other) noexcept;
 
     /**
-     * @brief 允许移动赋值
+     * @brief 创建 Domain。
+     * @param domainId 目标 Domain ID。
+     * @param pQos 可选 QoS，用于初始化 historyDepth。
+     * @return 创建成功返回 true。
      */
-    LDomain & operator=(LDomain && other) noexcept;
+    bool create(DomainId domainId, const LQos* pQos);
 
     /**
-     * @brief 创建域
-     *
-     * 初始化域实例，分配域ID和相关资源。
-     *
-     * @param[in] domainId 域标识符，使用DEFAULT_DOMAIN_ID表示默认域
-     * @param[in] pQos 域QoS配置指针，nullptr表示使用默认QoS
-     * @return true 创建成功
-     * @return false 创建失败，域已存在或资源不足
-     */
-    bool create(
-        DomainId     domainId, /* 域标识符 */
-        const LQos * pQos      /* QoS配置指针 */
-    );
-
-    /**
-     * @brief 销毁域
-     *
-     * 释放域占用的所有资源，域内所有实体将被销毁。
-     * 可以安全地多次调用。
+     * @brief 销毁 Domain 并清理缓存。
      */
     void destroy() noexcept;
 
     /**
-     * @brief 检查域是否有效
-     * @return true 域已创建且有效
-     * @return false 域未创建或已销毁
+     * @brief Domain 是否有效。
      */
     bool isValid() const noexcept;
 
     /**
-     * @brief 获取域ID
-     * @return 域标识符，无效域返回INVALID_DOMAIN_ID
+     * @brief 获取 Domain ID。
      */
     DomainId getDomainId() const noexcept;
 
     /**
-     * @brief 获取域名称
-     * @return 域名称字符串引用
+     * @brief 获取 Domain 名称。
      */
-    const std::string & getName() const noexcept;
+    const std::string& getName() const noexcept;
 
     /**
-     * @brief 设置域名称
-     * @param[in] name 新的域名称
+     * @brief 设置 Domain 名称。
      */
-    void setName(const std::string & name);
+    void setName(const std::string& name);
 
     /**
-     * @brief 获取域内参与者数量
-     * @return 当前域内的参与者数量
+     * @brief 获取参与者数量（当前阶段为占位统计）。
      */
     size_t getParticipantCount() const noexcept;
 
+    /**
+     * @brief 设置每个 topic 的历史深度。
+     */
     void setHistoryDepth(size_t depth) noexcept;
+
+    /**
+     * @brief 获取每个 topic 的历史深度。
+     */
     size_t getHistoryDepth() const noexcept;
 
-    void cacheTopicData(
-        int                       topic,
-        const std::vector<uint8_t> & data,
-        const std::string &       dataType = std::string()
-    );
+    /**
+     * @brief 写入 topic 缓存（线程安全）。
+     * @param topic topic id。
+     * @param data 序列化 payload。
+     * @param dataType 类型名（可选）。
+     */
+    void cacheTopicData(int topic, const std::vector<uint8_t>& data, const std::string& dataType = std::string());
+
+    /**
+     * @brief 根据 topic 查询数据类型名。
+     */
     std::string getDataTypeByTopic(int topic) const;
+
+    /**
+     * @brief 获取 topic 历史快照视图。
+     */
     LFindSet getFindSetByTopic(int topic) const;
-    bool getTopicData(int topic, std::vector<uint8_t> & data) const;
-    bool getNextTopicData(int topic, size_t & cursorFromNewest, std::vector<uint8_t> & data) const;
+
+    /**
+     * @brief 获取最新一条 topic 数据。
+     */
+    bool getTopicData(int topic, std::vector<uint8_t>& data) const;
+
+    /**
+     * @brief 从新到旧遍历 topic 历史数据。
+     * @param topic topic id。
+     * @param cursorFromNewest 迭代游标（0 表示最新）。
+     * @param data 输出数据。
+     * @return 若还有数据返回 true，并自动推进游标。
+     */
+    bool getNextTopicData(int topic, size_t& cursorFromNewest, std::vector<uint8_t>& data) const;
+
+    /**
+     * @brief topic 是否存在缓存数据。
+     */
     bool hasTopicData(int topic) const;
+
+    /**
+     * @brief 清空所有 topic 缓存。
+     */
     void clearTopicCache() noexcept;
 
 private:
-    /**
-     * @brief 域ID
-     */
     DomainId m_domainId;
-
-    /**
-     * @brief 域名称
-     */
     std::string m_name;
-
-    /**
-     * @brief 参与者数量
-     */
     size_t m_participantCount;
-
-    /**
-     * @brief 有效性标志
-     */
     bool m_valid;
+
     size_t m_historyDepth;
     std::map<int, std::deque<std::vector<uint8_t>>> m_topicCache;
-    std::map<int, std::string>                       m_topicDataTypes;
-    mutable std::mutex                               m_topicCacheMutex;
+    std::map<int, std::string> m_topicDataTypes;
+    mutable std::mutex m_topicCacheMutex;
 };
 
 } // namespace LDdsFramework

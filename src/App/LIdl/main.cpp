@@ -1,9 +1,10 @@
 /**
  * @file main.cpp
- * @brief lidl工具入口点
+ * @brief `lidl` 命令行工具入口。
  *
- * lidl - Lightweight DDS IDL编译器
- * 将IDL文件编译为各种目标语言的数据结构定义
+ * 功能：
+ * - 解析 `.lidl` 文件并构建 AST
+ * - 根据目标语言生成代码（当前重点为 C++）
  */
 
 #include <cstdint>
@@ -18,21 +19,21 @@
 namespace LDdsFramework {
 
 /**
- * @brief 命令行选项结构
+ * @brief 命令行参数。
  */
 struct CommandLineOptions
 {
-    std::vector<std::string> inputFiles;      ///< 输入IDL文件列表
+    std::vector<std::string> inputFiles;      ///< 输入 IDL 文件列表
     std::string              outputDirectory; ///< 输出目录
     TargetLanguage           targetLanguage;  ///< 目标语言
-    bool                     showHelp;        ///< 显示帮助
-    bool                     showVersion;     ///< 显示版本
-    bool                     verbose;         ///< 详细输出
-    bool                     strictMode;      ///< 严格模式
-    std::vector<std::string> includePaths;    ///< 包含路径
+    bool                     showHelp;        ///< 是否显示帮助
+    bool                     showVersion;     ///< 是否显示版本
+    bool                     verbose;         ///< 是否启用详细日志
+    bool                     strictMode;      ///< 是否启用严格模式
+    std::vector<std::string> includePaths;    ///< include 搜索路径
 
     /**
-     * @brief 默认构造函数
+     * @brief 默认构造。
      */
     CommandLineOptions() noexcept
         : outputDirectory("./generated")
@@ -41,11 +42,12 @@ struct CommandLineOptions
         , showVersion(false)
         , verbose(false)
         , strictMode(false)
-    {}
+    {
+    }
 };
 
 /**
- * @brief 显示版本信息
+ * @brief 显示版本信息。
  */
 void showVersion()
 {
@@ -56,9 +58,9 @@ void showVersion()
 }
 
 /**
- * @brief 显示帮助信息
+ * @brief 显示帮助信息。
  */
-void showHelp(const char * programName)
+void showHelp(const char* programName)
 {
     std::cout << "Usage: " << programName << " [options] <input-files...>" << std::endl;
     std::cout << std::endl;
@@ -76,51 +78,51 @@ void showHelp(const char * programName)
 }
 
 /**
- * @brief 解析目标语言字符串
+ * @brief 解析目标语言参数。
  */
-TargetLanguage parseLanguage(const std::string & lang)
+TargetLanguage parseLanguage(const std::string& lang)
 {
     if (lang == "cpp" || lang == "c++")
     {
         return TargetLanguage::Cpp;
     }
-    else if (lang == "csharp" || lang == "c#")
+    if (lang == "csharp" || lang == "c#")
     {
         return TargetLanguage::CSharp;
     }
-    else if (lang == "java")
+    if (lang == "java")
     {
         return TargetLanguage::Java;
     }
-    else if (lang == "python" || lang == "py")
+    if (lang == "python" || lang == "py")
     {
         return TargetLanguage::Python;
     }
-    else if (lang == "go" || lang == "golang")
+    if (lang == "go" || lang == "golang")
     {
         return TargetLanguage::Go;
     }
-    else if (lang == "rust" || lang == "rs")
+    if (lang == "rust" || lang == "rs")
     {
         return TargetLanguage::Rust;
     }
-    else if (lang == "typescript" || lang == "ts")
+    if (lang == "typescript" || lang == "ts")
     {
         return TargetLanguage::TypeScript;
     }
-    return TargetLanguage::Cpp; // 默认C++
+    return TargetLanguage::Cpp;
 }
 
 /**
- * @brief 解析命令行参数
+ * @brief 解析命令行参数。
  */
-CommandLineOptions parseCommandLine(int argc, char * argv[])
+CommandLineOptions parseCommandLine(int argc, char* argv[])
 {
     CommandLineOptions options;
 
     for (int i = 1; i < argc; ++i)
     {
-        std::string arg = argv[i];
+        const std::string arg = argv[i];
 
         if (arg == "-h" || arg == "--help")
         {
@@ -150,9 +152,8 @@ CommandLineOptions parseCommandLine(int argc, char * argv[])
         {
             options.includePaths.push_back(argv[++i]);
         }
-        else if (arg[0] != '-')
+        else if (!arg.empty() && arg[0] != '-')
         {
-            // 非选项参数视为输入文件
             options.inputFiles.push_back(arg);
         }
     }
@@ -161,56 +162,48 @@ CommandLineOptions parseCommandLine(int argc, char * argv[])
 }
 
 /**
- * @brief 主函数
+ * @brief `lidl` 主函数实现。
  */
-int main(int argc, char * argv[])
+int main(int argc, char* argv[])
 {
-    // 解析命令行参数
-    CommandLineOptions options = parseCommandLine(argc, argv);
+    const CommandLineOptions options = parseCommandLine(argc, argv);
 
-    // 显示版本信息
     if (options.showVersion)
     {
         showVersion();
         return EXIT_SUCCESS;
     }
 
-    // 显示帮助信息
     if (options.showHelp || options.inputFiles.empty())
     {
         showHelp(argv[0]);
         return options.inputFiles.empty() ? EXIT_FAILURE : EXIT_SUCCESS;
     }
 
-    // 配置解析选项
     ParseOptions parseOptions;
-    parseOptions.strictMode   = options.strictMode;
+    parseOptions.strictMode = options.strictMode;
     parseOptions.includePaths = options.includePaths;
 
-    // 配置生成选项
     GeneratorOptions generatorOptions;
-    generatorOptions.generateComments      = true;
+    generatorOptions.generateComments = true;
     generatorOptions.generateSerialization = true;
 
-    // 处理每个输入文件
     bool allSuccess = true;
 
-    for (const auto & inputFile : options.inputFiles)
+    for (const auto& inputFile : options.inputFiles)
     {
         if (options.verbose)
         {
             std::cout << "Processing: " << inputFile << std::endl;
         }
 
-        // 解析IDL文件
-        LIdlParser  parser(parseOptions);
+        LIdlParser parser(parseOptions);
         ParseResult parseResult = parser.parse(inputFile);
 
         if (!parseResult.success)
         {
             std::cerr << "Error: Failed to parse " << inputFile << std::endl;
-            // 输出解析错误
-            for (const auto & error : parseResult.errors)
+            for (const auto& error : parseResult.errors)
             {
                 std::cerr << "  [" << static_cast<int>(error.level) << "] "
                           << error.filePath << ":" << error.line
@@ -221,12 +214,11 @@ int main(int argc, char * argv[])
             continue;
         }
 
-        // 生成代码
         LIdlGenerator generator(options.targetLanguage);
         generator.setOptions(generatorOptions);
 
-        std::string      outputPath = options.outputDirectory + "/" + inputFile + ".gen";
-        GenerationResult genResult  = generator.generate(parseResult, outputPath);
+        const std::string outputPath = options.outputDirectory + "/" + inputFile + ".gen";
+        GenerationResult genResult = generator.generate(parseResult, outputPath);
 
         if (!genResult.success)
         {
@@ -247,8 +239,10 @@ int main(int argc, char * argv[])
 
 } // namespace LDdsFramework
 
-// 全局main函数入口
-int main(int argc, char * argv[])
+/**
+ * @brief 进程入口。
+ */
+int main(int argc, char* argv[])
 {
     return LDdsFramework::main(argc, argv);
 }

@@ -10,6 +10,9 @@
 
 namespace LDdsFramework {
 
+/**
+ * @brief 解析错误级别。
+ */
 enum class ParseErrorLevel : uint32_t
 {
     Warning = 0,
@@ -33,6 +36,9 @@ struct ParseError
     }
 };
 
+/**
+ * @brief 解析器可选项。
+ */
 struct ParseOptions
 {
     bool                     ignoreComments;
@@ -129,6 +135,9 @@ struct LIdlFile : AstNode
     std::vector<LIdlTopic>   topics;
 };
 
+/**
+ * @brief IDL 解析结果。
+ */
 struct ParseResult
 {
     bool                     success;
@@ -173,7 +182,13 @@ public:
     void setProgressCallback(const ParseProgressCallback & callback);
 
     ParseResult parse(const std::string & filePath);
+    /**
+     * @brief 解析内存中的 IDL 文本。
+     */
     ParseResult parseString(const std::string & idlContent, const std::string & sourceName);
+    /**
+     * @brief 解析多个 IDL 文件并合并 AST。
+     */
     ParseResult parseMultiple(const std::vector<std::string> & filePaths);
 
     const std::vector<ParseError> & getLastErrors() const noexcept;

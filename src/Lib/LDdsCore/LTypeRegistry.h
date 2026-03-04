@@ -17,6 +17,15 @@
 
 namespace LDdsFramework {
 
+/**
+ * @class LTypeRegistry
+ * @brief topic 与类型元信息注册中心（线程安全）。
+ *
+ * 核心职责：
+ * - registerType：注册类型工厂与序列化函数
+ * - createByTopic：按 topic 动态创建对象
+ * - getTopicByTypeName：按类型名反查 topic
+ */
 class LDDSCORE_EXPORT LTypeRegistry
 {
 public:
@@ -139,7 +148,14 @@ public:
     }
 
     std::shared_ptr<void> createByTopic(uint32_t topic) const;
+    /**
+     * @brief 通过类型名查询 topic。
+     * @return 查询失败返回 0。
+     */
     uint32_t getTopicByTypeName(const std::string & typeName) const;
+    /**
+     * @brief 通过 topic 查询类型名。
+     */
     std::string getTypeNameByTopic(uint32_t topic) const;
 
     bool serializeByTopic(uint32_t topic, const void * object, std::vector<uint8_t> & outPayload)

@@ -1,0 +1,10 @@
+// 示例 IDL：跨文件 include 与新增 topic
+#include "file1.lidl"
+
+package P3 {
+    struct TestParam : extend P1::P2::Handle {
+        int32 a;
+    }
+}
+
+TESTPARAM_TOPIC = P3::TestParam;

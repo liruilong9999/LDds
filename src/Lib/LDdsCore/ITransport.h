@@ -13,11 +13,17 @@ namespace LDdsFramework {
 
 class LMessage;
 
+/**
+ * @brief 传输协议类型。
+ */
 enum class TransportProtocol {
     UDP,
     TCP
 };
 
+/**
+ * @brief 传输层配置。
+ */
 struct LDDSCORE_EXPORT TransportConfig {
     QString bindAddress;
     quint16 bindPort;
@@ -34,6 +40,9 @@ struct LDDSCORE_EXPORT TransportConfig {
 
 using ReceiveCallback = std::function<void(const LMessage&, const QHostAddress&, quint16)>;
 
+/**
+ * @brief 传输状态机。
+ */
 enum class TransportState {
     Stopped,
     Starting,
@@ -42,6 +51,10 @@ enum class TransportState {
     Error
 };
 
+/**
+ * @class ITransport
+ * @brief 传输抽象基类，统一 UDP/TCP 接口。
+ */
 class LDDSCORE_EXPORT ITransport
 {
 public:
@@ -55,13 +68,19 @@ public:
     virtual bool start() = 0;
     virtual void stop() = 0;
 
-    // Required stage-2 API: send to the configured/default remote endpoint.
+    /**
+     * @brief 发送到默认远端。
+     */
     virtual bool sendMessage(const LMessage& message) = 0;
 
-    // Reserved API. UDP overrides this, TCP keeps "send to all connections".
+    /**
+     * @brief 广播发送（默认不支持，由子类覆写）。
+     */
     virtual bool broadcastMessage(const LMessage& message, quint16 broadcastPort);
 
-    // Shared helper for transports that send to a configured default endpoint.
+    /**
+     * @brief 设置默认远端地址。
+     */
     virtual bool setDefaultRemote(const QHostAddress& targetAddress, quint16 targetPort);
 
     void setReceiveCallback(ReceiveCallback callback);
