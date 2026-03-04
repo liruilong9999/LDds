@@ -34,6 +34,7 @@ endif()
 
 # CMake模板路径 
 include(${ROOT_DIR}/cmake/module.cmake)
+include(${ROOT_DIR}/cmake/module_qt.cmake)
 
 # 为多种构建类型设置输出目录
 set(CONFIGURATION_TYPES "Debug" "Release" "MinSizeRel" "RelWithDebInfo")
