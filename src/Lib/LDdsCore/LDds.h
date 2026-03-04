@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -153,7 +154,40 @@ public:
     std::string getLastError() const;
 
 private:
+    struct ReliablePendingEntry
+    {
+        LMessage message;
+        std::chrono::steady_clock::time_point lastSendAt;
+        uint32_t resendCount;
+    };
+
+    struct ReliableReceiveState
+    {
+        uint64_t expectedSeq;
+        std::map<uint64_t, LMessage> bufferedMessages;
+    };
+
     bool createTransportFromQos(const LQos & qos, const TransportConfig & transportConfig);
+    bool sendMessageThroughTransport(
+        const LMessage & message,
+        const QHostAddress * targetAddress = nullptr,
+        quint16 targetPort = 0);
+    void initializeReliableState();
+    void clearReliableState() noexcept;
+    void processReliableOutgoing(const std::chrono::steady_clock::time_point & now);
+    void handleReliableControlMessage(
+        const LMessage & message,
+        const QHostAddress & senderAddress,
+        quint16 senderPort);
+    void handleReliableDataMessage(
+        const LMessage & message,
+        const QHostAddress & senderAddress,
+        quint16 senderPort);
+    void deliverDataMessage(const LMessage & message);
+    uint32_t resolveReliableWriterId(
+        const LMessage & message,
+        const QHostAddress & senderAddress,
+        quint16 senderPort) const;
     bool publishSerializedTopic(
         uint32_t                topic,
         std::vector<uint8_t> && payload,
@@ -194,6 +228,17 @@ private:
     std::chrono::steady_clock::time_point m_lastHeartbeatReceive;
     std::chrono::milliseconds m_deadlineCheckInterval;
     std::chrono::milliseconds m_heartbeatInterval;
+
+    bool m_reliableUdpEnabled;
+    uint32_t m_reliableWriterId;
+    std::chrono::milliseconds m_reliableRetransmitInterval;
+    std::chrono::milliseconds m_reliableHeartbeatProbeInterval;
+    uint32_t m_reliableWindowSize;
+    uint32_t m_reliableMaxResendCount;
+    std::chrono::steady_clock::time_point m_lastReliableHeartbeatProbe;
+    std::map<uint64_t, ReliablePendingEntry> m_reliablePending;
+    std::unordered_map<uint32_t, ReliableReceiveState> m_reliableReceivers;
+    mutable std::mutex m_reliableMutex;
 };
 
 const char * getVersion() noexcept;

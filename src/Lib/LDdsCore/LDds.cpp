@@ -1,13 +1,36 @@
 #include "LDds.h"
+#include "LUdpTransport.h"
 
 #include <algorithm>
 #include <chrono>
+#include <exception>
+#include <limits>
+#include <string>
 #include <utility>
 
 namespace LDdsFramework {
 namespace {
 
 std::atomic<bool> g_initialized(false);
+
+constexpr uint32_t RELIABLE_MIN_WINDOW_SIZE = 16U;
+constexpr uint32_t RELIABLE_MAX_WINDOW_SIZE = 4096U;
+constexpr uint32_t RELIABLE_DEFAULT_MAX_RESEND = 32U;
+constexpr int32_t RELIABLE_DEFAULT_RETRANSMIT_MS = 200;
+constexpr int32_t RELIABLE_MIN_RETRANSMIT_MS = 80;
+constexpr int32_t RELIABLE_MAX_RETRANSMIT_MS = 1000;
+constexpr int32_t RELIABLE_MIN_HEARTBEAT_PROBE_MS = 300;
+
+uint32_t fnv1aHash32(const std::string & value)
+{
+    uint32_t hash = 2166136261U;
+    for (const unsigned char ch : value)
+    {
+        hash ^= static_cast<uint32_t>(ch);
+        hash *= 16777619U;
+    }
+    return (hash == 0U) ? 1U : hash;
+}
 
 int32_t resolveDeadlineMs(const LQos & qos)
 {
@@ -112,6 +135,16 @@ LDds::LDds()
     , m_lastHeartbeatReceive(std::chrono::steady_clock::now())
     , m_deadlineCheckInterval(200)
     , m_heartbeatInterval(1000)
+    , m_reliableUdpEnabled(false)
+    , m_reliableWriterId(1)
+    , m_reliableRetransmitInterval(RELIABLE_DEFAULT_RETRANSMIT_MS)
+    , m_reliableHeartbeatProbeInterval(std::chrono::milliseconds(RELIABLE_MIN_HEARTBEAT_PROBE_MS * 2))
+    , m_reliableWindowSize(RELIABLE_MIN_WINDOW_SIZE)
+    , m_reliableMaxResendCount(RELIABLE_DEFAULT_MAX_RESEND)
+    , m_lastReliableHeartbeatProbe(std::chrono::steady_clock::now())
+    , m_reliablePending()
+    , m_reliableReceivers()
+    , m_reliableMutex()
 {
 }
 
@@ -226,6 +259,8 @@ bool LDds::initialize(const LQos & qos, const TransportConfig & transportConfig,
         return false;
     }
 
+    initializeReliableState();
+
     m_sequence.store(0);
     m_running.store(true);
 
@@ -260,6 +295,7 @@ void LDds::shutdown() noexcept
 {
     m_running.store(false);
     stopQosThread();
+    clearReliableState();
 
     if (m_pTransport)
     {
@@ -420,6 +456,456 @@ bool LDds::createTransportFromQos(const LQos & qos, const TransportConfig & tran
     return true;
 }
 
+bool LDds::sendMessageThroughTransport(
+    const LMessage & message,
+    const QHostAddress * targetAddress,
+    quint16 targetPort)
+{
+    if (!m_pTransport)
+    {
+        return false;
+    }
+
+    if (targetAddress != nullptr && !targetAddress->isNull() && targetPort != 0)
+    {
+        if (m_pTransport->getProtocol() == TransportProtocol::UDP)
+        {
+            auto * udpTransport = dynamic_cast<LUdpTransport *>(m_pTransport.get());
+            if (udpTransport != nullptr)
+            {
+                return udpTransport->sendMessageTo(message, *targetAddress, targetPort);
+            }
+        }
+    }
+
+    return m_pTransport->sendMessage(message);
+}
+
+void LDds::initializeReliableState()
+{
+    const auto now = std::chrono::steady_clock::now();
+    const bool reliableEnabled =
+        m_qos.reliable &&
+        m_pTransport &&
+        m_pTransport->getProtocol() == TransportProtocol::UDP;
+
+    const int32_t deadlineMs = resolveDeadlineMs(m_qos);
+    int32_t retransmitMs = RELIABLE_DEFAULT_RETRANSMIT_MS;
+    if (deadlineMs > 0)
+    {
+        retransmitMs = std::max(
+            RELIABLE_MIN_RETRANSMIT_MS,
+            std::min(RELIABLE_MAX_RETRANSMIT_MS, deadlineMs / 2));
+    }
+    const int32_t heartbeatProbeMs = std::max(
+        RELIABLE_MIN_HEARTBEAT_PROBE_MS,
+        retransmitMs * 2);
+
+    const uint32_t historyDepth = static_cast<uint32_t>(
+        std::max(1, m_qos.historyDepth));
+    const uint32_t windowSize = std::max(
+        RELIABLE_MIN_WINDOW_SIZE,
+        std::min(RELIABLE_MAX_WINDOW_SIZE, historyDepth * 8U));
+
+    quint16 bindPort = 0;
+    std::string bindAddress;
+    if (m_pTransport)
+    {
+        bindPort = m_pTransport->getBoundPort();
+        const TransportConfig config = m_pTransport->getConfig();
+        if (bindPort == 0)
+        {
+            bindPort = config.bindPort;
+        }
+        bindAddress = config.bindAddress.toStdString();
+    }
+
+    const std::string writerSeed =
+        std::to_string(static_cast<uint32_t>(m_effectiveDomainId)) +
+        "|" + bindAddress +
+        "|" + std::to_string(static_cast<uint32_t>(bindPort)) +
+        "|" + std::to_string(static_cast<uintptr_t>(reinterpret_cast<uintptr_t>(this)));
+    const uint32_t writerId = fnv1aHash32(writerSeed);
+
+    std::lock_guard<std::mutex> lock(m_reliableMutex);
+    m_reliableUdpEnabled = reliableEnabled;
+    m_reliableWriterId = writerId;
+    m_reliableRetransmitInterval = std::chrono::milliseconds(retransmitMs);
+    m_reliableHeartbeatProbeInterval = std::chrono::milliseconds(heartbeatProbeMs);
+    m_reliableWindowSize = windowSize;
+    m_reliableMaxResendCount = RELIABLE_DEFAULT_MAX_RESEND;
+    m_lastReliableHeartbeatProbe = now;
+    m_reliablePending.clear();
+    m_reliableReceivers.clear();
+}
+
+void LDds::clearReliableState() noexcept
+{
+    std::lock_guard<std::mutex> lock(m_reliableMutex);
+    m_reliableUdpEnabled = false;
+    m_reliableWriterId = 1;
+    m_reliablePending.clear();
+    m_reliableReceivers.clear();
+    m_lastReliableHeartbeatProbe = std::chrono::steady_clock::now();
+}
+
+void LDds::processReliableOutgoing(const std::chrono::steady_clock::time_point & now)
+{
+    if (!m_running.load() || !m_pTransport)
+    {
+        return;
+    }
+
+    std::vector<LMessage> retryMessages;
+    bool shouldProbe = false;
+    uint64_t firstPendingSeq = 0;
+    uint64_t lastPendingSeq = 0;
+
+    {
+        std::lock_guard<std::mutex> lock(m_reliableMutex);
+        if (!m_reliableUdpEnabled)
+        {
+            return;
+        }
+
+        for (auto it = m_reliablePending.begin(); it != m_reliablePending.end();)
+        {
+            ReliablePendingEntry & entry = it->second;
+            if (now - entry.lastSendAt >= m_reliableRetransmitInterval)
+            {
+                if (m_reliableMaxResendCount > 0 && entry.resendCount >= m_reliableMaxResendCount)
+                {
+                    setLastError(
+                        "reliable udp drop pending seq=" + std::to_string(it->first) +
+                        ", maxResendCount=" + std::to_string(m_reliableMaxResendCount));
+                    it = m_reliablePending.erase(it);
+                    continue;
+                }
+
+                entry.lastSendAt = now;
+                ++entry.resendCount;
+                retryMessages.push_back(entry.message);
+            }
+            ++it;
+        }
+
+        if (!m_reliablePending.empty() &&
+            now - m_lastReliableHeartbeatProbe >= m_reliableHeartbeatProbeInterval)
+        {
+            firstPendingSeq = m_reliablePending.begin()->first;
+            lastPendingSeq = m_reliablePending.rbegin()->first;
+            m_lastReliableHeartbeatProbe = now;
+            shouldProbe = true;
+        }
+    }
+
+    for (const LMessage & pending : retryMessages)
+    {
+        if (!sendMessageThroughTransport(pending))
+        {
+            setLastError(
+                "reliable udp retransmit failed seq=" + std::to_string(pending.getSequence()) +
+                ", error=" + m_pTransport->getLastError().toStdString());
+        }
+    }
+
+    if (shouldProbe)
+    {
+        LMessage heartbeatReq = LMessage::makeHeartbeatReq(m_reliableWriterId, firstPendingSeq, lastPendingSeq);
+        heartbeatReq.setDomainId(static_cast<uint8_t>(m_effectiveDomainId));
+        heartbeatReq.setSequence(m_sequence.fetch_add(1) + 1);
+        if (!sendMessageThroughTransport(heartbeatReq))
+        {
+            setLastError(
+                "reliable udp heartbeat probe failed: " + m_pTransport->getLastError().toStdString());
+        }
+    }
+}
+
+void LDds::handleReliableControlMessage(
+    const LMessage & message,
+    const QHostAddress & senderAddress,
+    quint16 senderPort)
+{
+    if (!m_running.load())
+    {
+        return;
+    }
+
+    bool reliableUdpEnabled = false;
+    {
+        std::lock_guard<std::mutex> lock(m_reliableMutex);
+        reliableUdpEnabled = m_reliableUdpEnabled;
+    }
+    if (!reliableUdpEnabled)
+    {
+        return;
+    }
+
+    if (message.isHeartbeat())
+    {
+        std::lock_guard<std::mutex> lock(m_qosMutex);
+        m_lastHeartbeatReceive = std::chrono::steady_clock::now();
+    }
+
+    const LMessageType type = message.getMessageType();
+    if (type == LMessageType::Ack || type == LMessageType::HeartbeatRsp)
+    {
+        const uint32_t targetWriterId = message.getWriterId();
+        if (targetWriterId != 0 && targetWriterId != m_reliableWriterId)
+        {
+            return;
+        }
+
+        const uint64_t ackSeq = message.getAckSeq() > 0 ? message.getAckSeq() : message.getSequence();
+        std::lock_guard<std::mutex> lock(m_reliableMutex);
+        for (auto it = m_reliablePending.begin(); it != m_reliablePending.end() && it->first <= ackSeq;)
+        {
+            it = m_reliablePending.erase(it);
+        }
+        return;
+    }
+
+    if (type == LMessageType::Nack)
+    {
+        const uint32_t targetWriterId = message.getWriterId();
+        if (targetWriterId != 0 && targetWriterId != m_reliableWriterId)
+        {
+            return;
+        }
+
+        const uint64_t first = message.getFirstSeq() > 0 ? message.getFirstSeq() : 1;
+        const uint64_t last = message.getLastSeq() >= first
+            ? message.getLastSeq()
+            : std::numeric_limits<uint64_t>::max();
+        std::vector<LMessage> nackedMessages;
+
+        {
+            std::lock_guard<std::mutex> lock(m_reliableMutex);
+            for (auto it = m_reliablePending.lower_bound(first);
+                 it != m_reliablePending.end() && it->first <= last;
+                 ++it)
+            {
+                it->second.lastSendAt = std::chrono::steady_clock::now();
+                ++it->second.resendCount;
+                nackedMessages.push_back(it->second.message);
+            }
+        }
+
+        for (const LMessage & pending : nackedMessages)
+        {
+            (void)sendMessageThroughTransport(pending);
+        }
+        return;
+    }
+
+    if (type != LMessageType::HeartbeatReq && type != LMessageType::Heartbeat)
+    {
+        return;
+    }
+
+    const uint32_t remoteWriterId = resolveReliableWriterId(message, senderAddress, senderPort);
+    uint64_t ackSeq = 0;
+    uint64_t windowStart = 1;
+
+    {
+        std::lock_guard<std::mutex> lock(m_reliableMutex);
+        ReliableReceiveState & state = m_reliableReceivers[remoteWriterId];
+        if (state.expectedSeq == 0)
+        {
+            state.expectedSeq = (message.getFirstSeq() > 0) ? message.getFirstSeq() : 1;
+        }
+        windowStart = state.expectedSeq;
+        ackSeq = (state.expectedSeq > 0) ? (state.expectedSeq - 1) : 0;
+    }
+
+    const LMessage reply = (type == LMessageType::HeartbeatReq)
+        ? LMessage::makeHeartbeatRsp(remoteWriterId, ackSeq, windowStart, m_reliableWindowSize)
+        : LMessage::makeAck(remoteWriterId, ackSeq, windowStart, m_reliableWindowSize);
+
+    LMessage response = reply;
+    response.setDomainId(static_cast<uint8_t>(m_effectiveDomainId));
+    response.setSequence(m_sequence.fetch_add(1) + 1);
+    (void)sendMessageThroughTransport(response, &senderAddress, senderPort);
+}
+
+void LDds::handleReliableDataMessage(
+    const LMessage & message,
+    const QHostAddress & senderAddress,
+    quint16 senderPort)
+{
+    if (!m_running.load())
+    {
+        return;
+    }
+
+    const uint32_t writerId = resolveReliableWriterId(message, senderAddress, senderPort);
+    const uint64_t seq = message.getLastSeq() > 0 ? message.getLastSeq() : message.getSequence();
+    if (seq == 0)
+    {
+        return;
+    }
+
+    bool reliableUdpEnabled = false;
+    {
+        std::lock_guard<std::mutex> lock(m_reliableMutex);
+        reliableUdpEnabled = m_reliableUdpEnabled;
+    }
+    if (!reliableUdpEnabled)
+    {
+        deliverDataMessage(message);
+        return;
+    }
+
+    std::vector<LMessage> readyToDeliver;
+    bool shouldAck = false;
+    uint64_t ackSeq = 0;
+    uint64_t windowStart = 1;
+    bool shouldSendHeartbeatReq = false;
+    uint64_t heartbeatFirst = 0;
+    uint64_t heartbeatLast = 0;
+
+    {
+        std::lock_guard<std::mutex> lock(m_reliableMutex);
+        ReliableReceiveState & state = m_reliableReceivers[writerId];
+        if (state.expectedSeq == 0)
+        {
+            state.expectedSeq = seq;
+        }
+
+        const uint64_t maxAcceptableSeq =
+            state.expectedSeq + static_cast<uint64_t>(std::max(1U, m_reliableWindowSize));
+
+        if (seq < state.expectedSeq)
+        {
+            shouldAck = true;
+        }
+        else if (seq > maxAcceptableSeq)
+        {
+            shouldAck = true;
+            shouldSendHeartbeatReq = true;
+            heartbeatFirst = state.expectedSeq;
+            heartbeatLast = seq;
+        }
+        else if (seq == state.expectedSeq)
+        {
+            readyToDeliver.push_back(message);
+            ++state.expectedSeq;
+
+            while (true)
+            {
+                const auto buffered = state.bufferedMessages.find(state.expectedSeq);
+                if (buffered == state.bufferedMessages.end())
+                {
+                    break;
+                }
+
+                readyToDeliver.push_back(buffered->second);
+                state.bufferedMessages.erase(buffered);
+                ++state.expectedSeq;
+            }
+            shouldAck = true;
+        }
+        else
+        {
+            const auto insertResult = state.bufferedMessages.emplace(seq, message);
+            shouldAck = true;
+            if (!insertResult.second)
+            {
+                // Duplicate in receive window; ACK current cumulative sequence.
+            }
+        }
+
+        while (state.bufferedMessages.size() > static_cast<size_t>(std::max(1U, m_reliableWindowSize)))
+        {
+            auto newest = state.bufferedMessages.end();
+            --newest;
+            state.bufferedMessages.erase(newest);
+        }
+
+        windowStart = state.expectedSeq;
+        ackSeq = (state.expectedSeq > 0) ? (state.expectedSeq - 1) : 0;
+    }
+
+    for (const LMessage & pending : readyToDeliver)
+    {
+        deliverDataMessage(pending);
+    }
+
+    if (shouldSendHeartbeatReq)
+    {
+        LMessage heartbeatReq = LMessage::makeHeartbeatReq(writerId, heartbeatFirst, heartbeatLast);
+        heartbeatReq.setDomainId(static_cast<uint8_t>(m_effectiveDomainId));
+        heartbeatReq.setSequence(m_sequence.fetch_add(1) + 1);
+        (void)sendMessageThroughTransport(heartbeatReq, &senderAddress, senderPort);
+    }
+
+    if (shouldAck)
+    {
+        LMessage ack = LMessage::makeAck(writerId, ackSeq, windowStart, m_reliableWindowSize);
+        ack.setDomainId(static_cast<uint8_t>(m_effectiveDomainId));
+        ack.setSequence(m_sequence.fetch_add(1) + 1);
+        (void)sendMessageThroughTransport(ack, &senderAddress, senderPort);
+    }
+}
+
+void LDds::deliverDataMessage(const LMessage & message)
+{
+    const uint32_t topic = message.getTopic();
+    if (topic == 0)
+    {
+        return;
+    }
+
+    auto object = m_pTypeRegistry->createByTopic(topic);
+    if (!object)
+    {
+        return;
+    }
+
+    if (!m_pTypeRegistry->deserializeByTopic(topic, message.getPayload(), object.get()))
+    {
+        return;
+    }
+
+    const std::string dataType = m_pTypeRegistry->getTypeNameByTopic(topic);
+    m_domain.cacheTopicData(static_cast<int>(topic), message.getPayload(), dataType);
+    markTopicActivity(topic);
+
+    std::vector<TopicCallback> callbacks;
+    {
+        std::lock_guard<std::mutex> lock(m_subscribersMutex);
+        const auto it = m_subscribers.find(topic);
+        if (it != m_subscribers.end())
+        {
+            callbacks = it->second;
+        }
+    }
+
+    for (auto & callback : callbacks)
+    {
+        if (callback)
+        {
+            callback(topic, object);
+        }
+    }
+}
+
+uint32_t LDds::resolveReliableWriterId(
+    const LMessage & message,
+    const QHostAddress & senderAddress,
+    quint16 senderPort) const
+{
+    if (message.getWriterId() != 0)
+    {
+        return message.getWriterId();
+    }
+
+    const std::string endpoint =
+        senderAddress.toString().toStdString() + ":" + std::to_string(static_cast<uint32_t>(senderPort));
+    return fnv1aHash32(endpoint);
+}
+
 bool LDds::publishSerializedTopic(
     uint32_t                topic,
     std::vector<uint8_t> && payload,
@@ -441,8 +927,45 @@ bool LDds::publishSerializedTopic(
     const uint64_t sequence = m_sequence.fetch_add(1) + 1;
     LMessage       message(topic, sequence, payload);
     message.setDomainId(static_cast<uint8_t>(m_effectiveDomainId));
+    message.setMessageType(LMessageType::Data);
 
-    if (!m_pTransport->sendMessage(message))
+    bool reliableUdpEnabled = false;
+    uint32_t writerId = 0;
+    uint32_t windowSize = 0;
+    {
+        std::lock_guard<std::mutex> lock(m_reliableMutex);
+        reliableUdpEnabled = m_reliableUdpEnabled;
+        writerId = m_reliableWriterId;
+        windowSize = m_reliableWindowSize;
+    }
+
+    if (reliableUdpEnabled)
+    {
+        const auto now = std::chrono::steady_clock::now();
+        message.setWriterId(writerId);
+        message.setFirstSeq(sequence);
+        message.setLastSeq(sequence);
+        message.setWindowStart(sequence);
+        message.setWindowSize(windowSize);
+
+        {
+            std::lock_guard<std::mutex> lock(m_reliableMutex);
+            m_reliablePending[sequence] = ReliablePendingEntry{message, now, 0U};
+        }
+
+        if (!sendMessageThroughTransport(message))
+        {
+            {
+                std::lock_guard<std::mutex> lock(m_reliableMutex);
+                m_reliablePending.erase(sequence);
+            }
+            setLastError(
+                "sendMessage failed (reliable udp, domain=" + std::to_string(m_effectiveDomainId) +
+                "): " + m_pTransport->getLastError().toStdString());
+            return false;
+        }
+    }
+    else if (!sendMessageThroughTransport(message))
     {
         setLastError(
             "sendMessage failed (domain=" + std::to_string(m_effectiveDomainId) + "): " +
@@ -462,62 +985,47 @@ void LDds::handleTransportMessage(
     quint16           senderPort
 )
 {
-    (void)senderAddress;
-    (void)senderPort;
-
-    if (message.isHeartbeat())
-    {
-        if (message.getDomainId() != static_cast<uint8_t>(m_effectiveDomainId))
-        {
-            return;
-        }
-        std::lock_guard<std::mutex> lock(m_qosMutex);
-        m_lastHeartbeatReceive = std::chrono::steady_clock::now();
-        return;
-    }
-
     if (message.getDomainId() != static_cast<uint8_t>(m_effectiveDomainId))
     {
         return;
     }
 
-    const uint32_t topic = message.getTopic();
-    if (topic == 0)
+    try
     {
-        return;
-    }
-
-    auto           object = m_pTypeRegistry->createByTopic(topic);
-    if (!object)
-    {
-        return;
-    }
-
-    if (!m_pTypeRegistry->deserializeByTopic(topic, message.getPayload(), object.get()))
-    {
-        return;
-    }
-
-    const std::string dataType = m_pTypeRegistry->getTypeNameByTopic(topic);
-    m_domain.cacheTopicData(static_cast<int>(topic), message.getPayload(), dataType);
-    markTopicActivity(topic);
-
-    std::vector<TopicCallback> callbacks;
-    {
-        std::lock_guard<std::mutex> lock(m_subscribersMutex);
-        const auto                  it = m_subscribers.find(topic);
-        if (it != m_subscribers.end())
+        bool reliableUdpEnabled = false;
         {
-            callbacks = it->second;
+            std::lock_guard<std::mutex> lock(m_reliableMutex);
+            reliableUdpEnabled = m_reliableUdpEnabled;
         }
-    }
 
-    for (auto & callback : callbacks)
-    {
-        if (callback)
+        if (!reliableUdpEnabled)
         {
-            callback(topic, object);
+            if (message.isHeartbeat())
+            {
+                std::lock_guard<std::mutex> lock(m_qosMutex);
+                m_lastHeartbeatReceive = std::chrono::steady_clock::now();
+                return;
+            }
+
+            deliverDataMessage(message);
+            return;
         }
+
+        if (message.isControlMessage() || message.getTopic() == HEARTBEAT_TOPIC_ID)
+        {
+            handleReliableControlMessage(message, senderAddress, senderPort);
+            return;
+        }
+
+        handleReliableDataMessage(message, senderAddress, senderPort);
+    }
+    catch (const std::exception & ex)
+    {
+        setLastError(std::string("handleTransportMessage exception: ") + ex.what());
+    }
+    catch (...)
+    {
+        setLastError("handleTransportMessage unknown exception");
     }
 }
 
@@ -562,62 +1070,76 @@ void LDds::qosThreadFunc()
 {
     while (m_qosThreadRunning.load() && m_running.load())
     {
-        const auto now = std::chrono::steady_clock::now();
-        bool sendHeartbeat = false;
-        std::vector<std::pair<uint32_t, uint64_t>> deadlineMissed;
-        DeadlineMissedCallback deadlineCallback;
-
+        try
         {
-            std::lock_guard<std::mutex> lock(m_qosMutex);
+            const auto now = std::chrono::steady_clock::now();
+            bool sendHeartbeat = false;
+            std::vector<std::pair<uint32_t, uint64_t>> deadlineMissed;
+            DeadlineMissedCallback deadlineCallback;
 
-            if (now - m_lastHeartbeatSend >= m_heartbeatInterval)
             {
-                sendHeartbeat = true;
-                m_lastHeartbeatSend = now;
-            }
+                std::lock_guard<std::mutex> lock(m_qosMutex);
 
-            const int32_t deadlineMs = resolveDeadlineMs(m_qos);
-            if (deadlineMs > 0)
-            {
-                for (const auto & pair : m_lastTopicActivity)
+                if (now - m_lastHeartbeatSend >= m_heartbeatInterval)
                 {
-                    const uint32_t topic = pair.first;
-                    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - pair.second).count();
-                    if (elapsed > deadlineMs)
+                    sendHeartbeat = true;
+                    m_lastHeartbeatSend = now;
+                }
+
+                const int32_t deadlineMs = resolveDeadlineMs(m_qos);
+                if (deadlineMs > 0)
+                {
+                    for (const auto & pair : m_lastTopicActivity)
                     {
-                        if (m_deadlineMissedTopics.insert(topic).second)
+                        const uint32_t topic = pair.first;
+                        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - pair.second).count();
+                        if (elapsed > deadlineMs)
                         {
-                            deadlineMissed.push_back({topic, static_cast<uint64_t>(elapsed)});
+                            if (m_deadlineMissedTopics.insert(topic).second)
+                            {
+                                deadlineMissed.push_back({topic, static_cast<uint64_t>(elapsed)});
+                            }
                         }
                     }
                 }
+
+                deadlineCallback = m_deadlineMissedCallback;
             }
 
-            deadlineCallback = m_deadlineMissedCallback;
-        }
-
-        if (sendHeartbeat && m_pTransport && m_running.load())
-        {
-            const uint64_t sequence = m_sequence.fetch_add(1) + 1;
-            const uint64_t nowMs = static_cast<uint64_t>(
-                std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count()
-            );
-            LMessage heartbeat = LMessage::makeHeartbeat(sequence, nowMs);
-            heartbeat.setDomainId(static_cast<uint8_t>(m_effectiveDomainId));
-            (void)m_pTransport->sendMessage(heartbeat);
-        }
-
-        for (const auto & missed : deadlineMissed)
-        {
-            setLastError(
-                "deadline missed topic=" + std::to_string(missed.first) +
-                ", elapsedMs=" + std::to_string(missed.second)
-            );
-
-            if (deadlineCallback)
+            if (sendHeartbeat && m_pTransport && m_running.load())
             {
-                deadlineCallback(missed.first, missed.second);
+                const uint64_t sequence = m_sequence.fetch_add(1) + 1;
+                const uint64_t nowMs = static_cast<uint64_t>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count()
+                );
+                LMessage heartbeat = LMessage::makeHeartbeat(sequence, nowMs);
+                heartbeat.setDomainId(static_cast<uint8_t>(m_effectiveDomainId));
+                heartbeat.setWriterId(m_reliableWriterId);
+                (void)sendMessageThroughTransport(heartbeat);
             }
+
+            processReliableOutgoing(now);
+
+            for (const auto & missed : deadlineMissed)
+            {
+                setLastError(
+                    "deadline missed topic=" + std::to_string(missed.first) +
+                    ", elapsedMs=" + std::to_string(missed.second)
+                );
+
+                if (deadlineCallback)
+                {
+                    deadlineCallback(missed.first, missed.second);
+                }
+            }
+        }
+        catch (const std::exception & ex)
+        {
+            setLastError(std::string("qos thread exception: ") + ex.what());
+        }
+        catch (...)
+        {
+            setLastError("qos thread unknown exception");
         }
 
         std::unique_lock<std::mutex> lock(m_qosMutex);
