@@ -76,13 +76,13 @@ int main()
     const LQos qos = makeQos();
     if (!receiver.initialize(qos, makeReceiverConfig(), DOMAIN_ID))
     {
-        std::cerr << "[example_typed_pubsub] receiver init failed error="
+        std::cerr << "[example_typed_pubsub] 接收端初始化失败 error="
                   << receiver.getLastError() << "\n";
         return EXIT_FAILURE;
     }
     if (!sender.initialize(qos, makeSenderConfig(), DOMAIN_ID))
     {
-        std::cerr << "[example_typed_pubsub] sender init failed error="
+        std::cerr << "[example_typed_pubsub] 发送端初始化失败 error="
                   << sender.getLastError() << "\n";
         receiver.shutdown();
         return EXIT_FAILURE;
@@ -91,7 +91,7 @@ int main()
     if (!receiver.registerType<Pose>(typeName, TOPIC_ID) ||
         !sender.registerType<Pose>(typeName, TOPIC_ID))
     {
-        std::cerr << "[example_typed_pubsub] registerType failed\n";
+        std::cerr << "[example_typed_pubsub] 类型注册失败\n";
         sender.shutdown();
         receiver.shutdown();
         return EXIT_FAILURE;
@@ -108,7 +108,7 @@ int main()
     const Pose sentPose{1.25F, -2.50F, 0.75F, 12345678U};
     if (!sender.publishTopicByTopic<Pose>(TOPIC_ID, sentPose))
     {
-        std::cerr << "[example_typed_pubsub] publish failed error="
+        std::cerr << "[example_typed_pubsub] 发布失败 error="
                   << sender.getLastError() << "\n";
         sender.shutdown();
         receiver.shutdown();
@@ -129,11 +129,12 @@ int main()
 
     if (!callbackArrived)
     {
-        std::cerr << "[example_typed_pubsub] timeout waiting callback\n";
+        std::cerr << "[example_typed_pubsub] 等待订阅回调超时\n";
         return EXIT_FAILURE;
     }
 
     std::cout << "[example_typed_pubsub] result=ok"
+              << " 状态=成功"
               << " pose=(" << receivedPose.x << ","
               << receivedPose.y << ","
               << receivedPose.yaw << ","

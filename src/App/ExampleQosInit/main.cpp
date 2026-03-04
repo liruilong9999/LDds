@@ -23,7 +23,7 @@ int main(int argc, char * argv[])
     std::string loadError;
     if (!qos.loadFromXmlFile(qosPath, &loadError))
     {
-        std::cerr << "[example_qos_init] load qos failed path=" << qosPath
+        std::cerr << "[example_qos_init] QoS加载失败 path=" << qosPath
                   << " error=" << loadError << "\n";
         return EXIT_FAILURE;
     }
@@ -43,13 +43,14 @@ int main(int argc, char * argv[])
 
     if (!dds.initialize(qos, config))
     {
-        std::cerr << "[example_qos_init] initialize failed error="
+        std::cerr << "[example_qos_init] 初始化失败 error="
                   << dds.getLastError() << "\n";
         return EXIT_FAILURE;
     }
 
     const LQos & runningQos = dds.getQos();
     std::cout << "[example_qos_init] result=ok"
+              << " 状态=成功"
               << " domain=" << static_cast<uint32_t>(runningQos.domainId)
               << " transport=" << transportText(runningQos.transportType)
               << " reliable=" << (runningQos.reliable ? "true" : "false")

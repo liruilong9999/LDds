@@ -23,4 +23,13 @@
 #define LDDSCORE_EXPORT __declspec(dllimport)
 #endif
 
+#ifdef _MSC_VER
+/**
+ * @brief 抑制 MSVC C4251 警告（DLL 导出类型包含 STL 成员）。
+ *
+ * 该警告在本工程中会产生大量噪声，影响真实问题定位。
+ */
+#pragma warning(disable : 4251)
+#endif
+
 #endif // !LDDS_GLOBAL_H

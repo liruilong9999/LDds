@@ -67,13 +67,13 @@ int main()
     const LQos qos = makeQos();
     if (!receiver.initialize(qos, makeReceiverConfig(), DOMAIN_ID))
     {
-        std::cerr << "[example_udp_bytes] receiver init failed error="
+        std::cerr << "[example_udp_bytes] 接收端初始化失败 error="
                   << receiver.getLastError() << "\n";
         return EXIT_FAILURE;
     }
     if (!sender.initialize(qos, makeSenderConfig(), DOMAIN_ID))
     {
-        std::cerr << "[example_udp_bytes] sender init failed error="
+        std::cerr << "[example_udp_bytes] 发送端初始化失败 error="
                   << sender.getLastError() << "\n";
         receiver.shutdown();
         return EXIT_FAILURE;
@@ -82,7 +82,7 @@ int main()
     if (!receiver.registerType<std::vector<uint8_t>>("example::Bytes", TOPIC_ID) ||
         !sender.registerType<std::vector<uint8_t>>("example::Bytes", TOPIC_ID))
     {
-        std::cerr << "[example_udp_bytes] registerType failed\n";
+        std::cerr << "[example_udp_bytes] 类型注册失败\n";
         sender.shutdown();
         receiver.shutdown();
         return EXIT_FAILURE;
@@ -100,7 +100,7 @@ int main()
     const std::vector<uint8_t> payload(text.begin(), text.end());
     if (!sender.publishTopicByTopic<std::vector<uint8_t>>(TOPIC_ID, payload))
     {
-        std::cerr << "[example_udp_bytes] publish failed error="
+        std::cerr << "[example_udp_bytes] 发布失败 error="
                   << sender.getLastError() << "\n";
         sender.shutdown();
         receiver.shutdown();
@@ -121,11 +121,12 @@ int main()
 
     if (!callbackArrived)
     {
-        std::cerr << "[example_udp_bytes] timeout waiting callback\n";
+        std::cerr << "[example_udp_bytes] 等待订阅回调超时\n";
         return EXIT_FAILURE;
     }
 
     std::cout << "[example_udp_bytes] result=ok"
+              << " 状态=成功"
               << " topic=" << TOPIC_ID
               << " payload=\"" << receivedText << "\"\n";
     return EXIT_SUCCESS;

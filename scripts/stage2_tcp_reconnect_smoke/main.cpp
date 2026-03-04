@@ -16,7 +16,7 @@ namespace {
 bool check(bool condition, const std::string& message)
 {
     if (!condition) {
-        std::cerr << "[stage2_tcp] FAIL: " << message << "\n";
+        std::cerr << "[stage2_tcp] FAIL(失败): " << message << "\n";
         return false;
     }
     return true;
@@ -60,7 +60,7 @@ bool runReconnectCase()
         }
     );
 
-    ok &= check(receiver.start(), "receiver start should succeed");
+    ok &= check(receiver.start(), "接收端启动应成功");
 
     LTcpTransport sender;
     TransportConfig senderCfg;
@@ -76,7 +76,7 @@ bool runReconnectCase()
     senderCfg.sendQueueOverflowPolicy = SendQueueOverflowPolicy::DropOldest;
 
     sender.setConfig(senderCfg);
-    ok &= check(sender.start(), "sender start should succeed");
+    ok &= check(sender.start(), "发送端启动应成功");
     if (!ok) {
         sender.stop();
         receiver.stop();
@@ -84,11 +84,11 @@ bool runReconnectCase()
     }
 
     for (int i = 0; i < 10; ++i) {
-        ok &= check(sender.sendMessage(makeMessage(static_cast<uint64_t>(i + 1), 0x11)), "initial send should succeed");
+        ok &= check(sender.sendMessage(makeMessage(static_cast<uint64_t>(i + 1), 0x11)), "初始发送应成功");
     }
 
-    ok &= check(waitForCount(receivedCount, 1, 3000), "receiver should get initial messages");
-    ok &= check(sender.getConnectionCount() <= 1, "same endpoint should not create duplicate connections");
+    ok &= check(waitForCount(receivedCount, 1, 3000), "接收端应收到初始消息");
+    ok &= check(sender.getConnectionCount() <= 1, "同一端点不应创建重复连接");
 
     receiver.stop();
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -98,7 +98,7 @@ bool runReconnectCase()
     }
 
     receiver.setConfig(receiverCfg);
-    ok &= check(receiver.start(), "receiver start after disconnect should succeed");
+    ok &= check(receiver.start(), "断线后接收端重启应成功");
 
     for (int i = 0; i < 20; ++i) {
         (void)sender.sendMessage(makeMessage(static_cast<uint64_t>(200 + i), 0x33));
@@ -106,7 +106,7 @@ bool runReconnectCase()
     }
 
     const int beforeRecovery = receivedCount.load();
-    ok &= check(waitForCount(receivedCount, beforeRecovery + 1, 5000), "should recover and continue receiving");
+    ok &= check(waitForCount(receivedCount, beforeRecovery + 1, 5000), "应恢复连接并继续接收");
 
     sender.stop();
     receiver.stop();
@@ -161,20 +161,20 @@ bool runQueuePolicyCase()
 
     ok &= check(
         runPolicyCase(SendQueueOverflowPolicy::DropOldest, dropOldestOk, dropOldestFail),
-        "DropOldest case should run"
+        "DropOldest 场景应可执行"
     );
     ok &= check(
         runPolicyCase(SendQueueOverflowPolicy::DropNewest, dropNewestOk, dropNewestFail),
-        "DropNewest case should run"
+        "DropNewest 场景应可执行"
     );
     ok &= check(
         runPolicyCase(SendQueueOverflowPolicy::FailFast, failFastOk, failFastFail),
-        "FailFast case should run"
+        "FailFast 场景应可执行"
     );
 
-    ok &= check(dropOldestOk > 0, "DropOldest should accept messages under overflow");
-    ok &= check(dropNewestFail > 0, "DropNewest should reject part of messages under overflow");
-    ok &= check(failFastFail > 0, "FailFast should fail when queue is full");
+    ok &= check(dropOldestOk > 0, "DropOldest 在溢出下应仍接收部分消息");
+    ok &= check(dropNewestFail > 0, "DropNewest 在溢出下应拒绝部分消息");
+    ok &= check(failFastFail > 0, "FailFast 在队列满时应快速失败");
 
     return ok;
 }
@@ -187,6 +187,7 @@ int main()
     ok &= runReconnectCase();
     ok &= runQueuePolicyCase();
 
-    std::cout << "[stage2_tcp] result=" << (ok ? "ok" : "fail") << "\n";
+    std::cout << "[stage2_tcp] result=" << (ok ? "ok" : "fail")
+              << " 说明=" << (ok ? "通过" : "失败") << "\n";
     return ok ? 0 : 1;
 }

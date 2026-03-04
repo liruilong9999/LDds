@@ -26,7 +26,7 @@ bool check(bool condition, const std::string & message)
 {
     if (!condition)
     {
-        std::cerr << "[stage11_phase5] FAIL: " << message << "\n";
+        std::cerr << "[stage11_phase5] FAIL(失败): " << message << "\n";
         return false;
     }
     return true;
@@ -88,11 +88,11 @@ bool runDurabilityPersistentCase()
         recvCount.fetch_add(1);
     });
 
-    ok &= check(receiver.initialize(receiverQos, receiverCfg), "durability receiver initialize");
-    ok &= check(sender.initialize(senderQos, senderCfg), "durability sender initialize");
-    ok &= check(sender.publishTopicByTopic<Phase5Msg>(topic, Phase5Msg{10}), "durability publish 10");
-    ok &= check(sender.publishTopicByTopic<Phase5Msg>(topic, Phase5Msg{20}), "durability publish 20");
-    ok &= check(waitForAtLeast(recvCount, 2, 3000), "durability receiver should receive 2 messages");
+    ok &= check(receiver.initialize(receiverQos, receiverCfg), "持久化接收端初始化");
+    ok &= check(sender.initialize(senderQos, senderCfg), "持久化发送端初始化");
+    ok &= check(sender.publishTopicByTopic<Phase5Msg>(topic, Phase5Msg{10}), "持久化发布 10");
+    ok &= check(sender.publishTopicByTopic<Phase5Msg>(topic, Phase5Msg{20}), "持久化发布 20");
+    ok &= check(waitForAtLeast(recvCount, 2, 3000), "持久化接收端应收到 2 条消息");
 
     sender.shutdown();
     receiver.shutdown();
@@ -101,20 +101,20 @@ bool runDurabilityPersistentCase()
     replayReceiver.registerType<Phase5Msg>("Phase5Msg", topic);
     ok &= check(
         replayReceiver.initialize(receiverQos, receiverCfg),
-        "durability replay receiver initialize");
+        "持久化回放接收端初始化");
 
     std::vector<uint8_t> latestRaw;
     ok &= check(
         replayReceiver.domain().getTopicData(static_cast<int>(topic), latestRaw),
-        "durability replay latest topic data exists");
+        "持久化回放应存在最新 topic 数据");
     if (ok)
     {
-        ok &= check(latestRaw.size() == sizeof(Phase5Msg), "durability replay payload size");
+        ok &= check(latestRaw.size() == sizeof(Phase5Msg), "持久化回放载荷大小");
         if (latestRaw.size() == sizeof(Phase5Msg))
         {
             Phase5Msg latest{};
             std::memcpy(&latest, latestRaw.data(), sizeof(Phase5Msg));
-            ok &= check(latest.value == 20, "durability replay latest value should be 20");
+            ok &= check(latest.value == 20, "持久化回放最新值应为 20");
         }
     }
 
@@ -171,21 +171,21 @@ bool runOwnershipExclusiveCase()
         callbackCount.fetch_add(1);
     });
 
-    ok &= check(receiver.initialize(receiverQos, receiverCfg), "ownership receiver initialize");
-    ok &= check(writerLow.initialize(lowWriterQos, writerLowCfg), "ownership low writer initialize");
-    ok &= check(writerHigh.initialize(highWriterQos, writerHighCfg), "ownership high writer initialize");
+    ok &= check(receiver.initialize(receiverQos, receiverCfg), "Ownership 接收端初始化");
+    ok &= check(writerLow.initialize(lowWriterQos, writerLowCfg), "Ownership 低优先级写者初始化");
+    ok &= check(writerHigh.initialize(highWriterQos, writerHighCfg), "Ownership 高优先级写者初始化");
 
-    ok &= check(writerLow.publishTopicByTopic<Phase5Msg>(topic, Phase5Msg{1}), "ownership low publish 1");
-    ok &= check(waitForAtLeast(callbackCount, 1, 2000), "ownership receive low writer");
+    ok &= check(writerLow.publishTopicByTopic<Phase5Msg>(topic, Phase5Msg{1}), "低优先级写者发布 1");
+    ok &= check(waitForAtLeast(callbackCount, 1, 2000), "应收到低优先级写者消息");
 
-    ok &= check(writerHigh.publishTopicByTopic<Phase5Msg>(topic, Phase5Msg{2}), "ownership high publish 2");
-    ok &= check(waitForAtLeast(callbackCount, 2, 2000), "ownership receive high writer");
+    ok &= check(writerHigh.publishTopicByTopic<Phase5Msg>(topic, Phase5Msg{2}), "高优先级写者发布 2");
+    ok &= check(waitForAtLeast(callbackCount, 2, 2000), "应收到高优先级写者消息");
 
-    ok &= check(writerLow.publishTopicByTopic<Phase5Msg>(topic, Phase5Msg{3}), "ownership low publish 3");
+    ok &= check(writerLow.publishTopicByTopic<Phase5Msg>(topic, Phase5Msg{3}), "低优先级写者发布 3");
     std::this_thread::sleep_for(std::chrono::milliseconds(400));
 
-    ok &= check(callbackCount.load() == 2, "ownership low writer should be ignored after high takeover");
-    ok &= check(lastValue.load() == 2, "ownership last value should stay at high writer data");
+    ok &= check(callbackCount.load() == 2, "高优先级接管后低优先级写者应被忽略");
+    ok &= check(lastValue.load() == 2, "最终值应保持为高优先级写者数据");
 
     writerHigh.shutdown();
     writerLow.shutdown();
@@ -218,7 +218,7 @@ bool runQosHotReloadCase()
         "<qos transportType=\"udp\" domainId=\"43\" historyDepth=\"4\" deadlineMs=\"600\" reliable=\"true\"/>";
     const std::string brokenXml = "<qos><broken>";
 
-    ok &= check(writeTextFile(qosPath, initialXml), "write initial qos.xml");
+    ok &= check(writeTextFile(qosPath, initialXml), "写入初始 qos.xml");
 
     TransportConfig cfg;
     cfg.bindAddress = "127.0.0.1";
@@ -228,14 +228,14 @@ bool runQosHotReloadCase()
     cfg.enableDiscovery = false;
 
     LDds dds;
-    ok &= check(dds.initializeFromQosXml(qosPath.string(), cfg), "initializeFromQosXml for hot reload");
+    ok &= check(dds.initializeFromQosXml(qosPath.string(), cfg), "热更新场景 initializeFromQosXml");
     if (!ok)
     {
         dds.shutdown();
         return false;
     }
 
-    ok &= check(writeTextFile(qosPath, updatedXml), "write updated qos.xml");
+    ok &= check(writeTextFile(qosPath, updatedXml), "写入更新后的 qos.xml");
 
     bool reloaded = false;
     const auto start = std::chrono::steady_clock::now();
@@ -251,11 +251,11 @@ bool runQosHotReloadCase()
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
-    ok &= check(reloaded, "hot reload should apply deadline/history/reliability");
+    ok &= check(reloaded, "热更新应应用 deadline/history/reliability");
 
-    ok &= check(writeTextFile(qosPath, brokenXml), "write broken qos.xml");
+    ok &= check(writeTextFile(qosPath, brokenXml), "写入错误 qos.xml");
     std::this_thread::sleep_for(std::chrono::milliseconds(2000));
-    ok &= check(dds.isRunning(), "hot reload parse failure should not stop process");
+    ok &= check(dds.isRunning(), "热更新解析失败不应导致进程退出");
 
     dds.shutdown();
     return ok;
@@ -270,6 +270,7 @@ int main()
     ok &= runOwnershipExclusiveCase();
     ok &= runQosHotReloadCase();
 
-    std::cout << "[stage11_phase5] result=" << (ok ? "ok" : "fail") << "\n";
+    std::cout << "[stage11_phase5] result=" << (ok ? "ok" : "fail")
+              << " 说明=" << (ok ? "通过" : "失败") << "\n";
     return ok ? 0 : 1;
 }

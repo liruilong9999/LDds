@@ -23,7 +23,7 @@ bool check(bool condition, const std::string & message)
 {
     if (!condition)
     {
-        std::cerr << "[stage12_phase6] FAIL: " << message << "\n";
+        std::cerr << "[stage12_phase6] FAIL(失败): " << message << "\n";
         return false;
     }
     return true;
@@ -118,21 +118,21 @@ bool runMetricsAndLoggingCase()
     receiver.setLogCallback(appendLog);
     sender.setLogCallback(appendLog);
 
-    ok &= check(receiver.initialize(receiverQos, receiverCfg), "metrics/log receiver initialize");
-    ok &= check(sender.initialize(senderQos, senderCfg), "metrics/log sender initialize");
+    ok &= check(receiver.initialize(receiverQos, receiverCfg), "指标/日志接收端初始化");
+    ok &= check(sender.initialize(senderQos, senderCfg), "指标/日志发送端初始化");
 
-    ok &= check(sender.publishTopicByTopic<Phase6Msg>(topic, Phase6Msg{1}), "publish #1");
-    ok &= check(sender.publishTopicByTopic<Phase6Msg>(topic, Phase6Msg{2}), "publish #2");
-    ok &= check(sender.publishTopicByTopic<Phase6Msg>(topic, Phase6Msg{3}), "publish #3");
-    ok &= check(waitForAtLeast(recvCount, 3, 3000), "receiver should get 3 messages");
+    ok &= check(sender.publishTopicByTopic<Phase6Msg>(topic, Phase6Msg{1}), "发布 #1");
+    ok &= check(sender.publishTopicByTopic<Phase6Msg>(topic, Phase6Msg{2}), "发布 #2");
+    ok &= check(sender.publishTopicByTopic<Phase6Msg>(topic, Phase6Msg{3}), "发布 #3");
+    ok &= check(waitForAtLeast(recvCount, 3, 3000), "接收端应收到 3 条消息");
 
     const std::string senderMetrics = sender.exportMetricsText();
     const std::string receiverMetrics = receiver.exportMetricsText();
 
     ok &= check(parseMetricValue(senderMetrics, "ldds_messages_sent_total") >= 3,
-                "sender sent metrics should be >= 3");
+                "发送计数指标应 >= 3");
     ok &= check(parseMetricValue(receiverMetrics, "ldds_messages_received_total") >= 3,
-                "receiver recv metrics should be >= 3");
+                "接收计数指标应 >= 3");
 
     bool hasTraceLog = false;
     {
@@ -148,7 +148,7 @@ bool runMetricsAndLoggingCase()
             }
         }
     }
-    ok &= check(hasTraceLog, "structured log should contain topic/messageId/peer fields");
+    ok &= check(hasTraceLog, "结构化日志应包含 topic/messageId/peer 字段");
 
     sender.shutdown();
     receiver.shutdown();
@@ -205,21 +205,21 @@ bool runSecurityCase()
         recvCount.fetch_add(1);
     });
 
-    ok &= check(receiver.initialize(receiverQos, receiverCfg), "security receiver initialize");
-    ok &= check(sender.initialize(authorizedSenderQos, senderCfg), "security authorized sender initialize");
-    ok &= check(unauthorized.initialize(unauthorizedSenderQos, badCfg), "security unauthorized sender initialize");
+    ok &= check(receiver.initialize(receiverQos, receiverCfg), "安全接收端初始化");
+    ok &= check(sender.initialize(authorizedSenderQos, senderCfg), "安全授权发送端初始化");
+    ok &= check(unauthorized.initialize(unauthorizedSenderQos, badCfg), "安全未授权发送端初始化");
 
-    ok &= check(sender.publishTopicByTopic<Phase6Msg>(topic, Phase6Msg{111}), "authorized publish");
-    ok &= check(unauthorized.publishTopicByTopic<Phase6Msg>(topic, Phase6Msg{222}), "unauthorized publish");
+    ok &= check(sender.publishTopicByTopic<Phase6Msg>(topic, Phase6Msg{111}), "授权发送端发布");
+    ok &= check(unauthorized.publishTopicByTopic<Phase6Msg>(topic, Phase6Msg{222}), "未授权发送端发布");
 
-    ok &= check(waitForAtLeast(recvCount, 1, 3000), "receiver should accept authorized message");
+    ok &= check(waitForAtLeast(recvCount, 1, 3000), "接收端应接收授权消息");
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
 
-    ok &= check(lastValue.load() == 111, "unauthorized message should be rejected");
+    ok &= check(lastValue.load() == 111, "未授权消息应被拒绝");
 
     const std::string receiverMetrics = receiver.exportMetricsText();
     ok &= check(parseMetricValue(receiverMetrics, "ldds_auth_rejected_total") >= 1,
-                "auth rejected metric should be >= 1");
+                "鉴权拒绝指标应 >= 1");
 
     unauthorized.shutdown();
     sender.shutdown();
@@ -319,7 +319,7 @@ int main()
 
     double plainMs = 0.0;
     double secureMs = 0.0;
-    ok &= check(runPerformanceCase(plainMs, secureMs), "performance benchmark should complete");
+    ok &= check(runPerformanceCase(plainMs, secureMs), "性能基准应执行完成");
 
     if (plainMs <= 0.0)
     {
@@ -339,7 +339,9 @@ int main()
               << " delta_pct=" << deltaPct
               << " plain_mps=" << plainMps
               << " secure_mps=" << secureMps
+              << " 说明=性能对比"
               << "\n";
-    std::cout << "[stage12_phase6] result=" << (ok ? "ok" : "fail") << "\n";
+    std::cout << "[stage12_phase6] result=" << (ok ? "ok" : "fail")
+              << " 说明=" << (ok ? "通过" : "失败") << "\n";
     return ok ? 0 : 1;
 }

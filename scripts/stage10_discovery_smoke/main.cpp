@@ -22,7 +22,7 @@ bool check(bool condition, const std::string & message)
 {
     if (!condition)
     {
-        std::cerr << "[stage10_discovery] FAIL: " << message << "\n";
+        std::cerr << "[stage10_discovery] FAIL(失败): " << message << "\n";
         return false;
     }
     return true;
@@ -95,11 +95,11 @@ bool runDiscoveryCase()
     cfg.enableBroadcast = true;
     cfg.enableMulticast = true;
 
-    ok &= check(receiver.initialize(sameDomainQos, cfg), "receiver initialize should succeed");
-    ok &= check(sender.initialize(sameDomainQos, cfg), "sender initialize should succeed");
+    ok &= check(receiver.initialize(sameDomainQos, cfg), "接收端初始化应成功");
+    ok &= check(sender.initialize(sameDomainQos, cfg), "发送端初始化应成功");
     ok &= check(
         foreignDomainReceiver.initialize(foreignDomainQos, cfg),
-        "foreign domain receiver initialize should succeed");
+        "异域接收端初始化应成功");
     if (!ok)
     {
         foreignDomainReceiver.shutdown();
@@ -119,17 +119,17 @@ bool runDiscoveryCase()
         }
     }
 
-    ok &= check(discovered, "same-domain receiver should be discovered without remote config");
-    ok &= check(receiverCount.load() >= 1, "receiver should get at least one message");
-    ok &= check(receiverLastValue.load() >= 100, "receiver payload should be valid");
-    ok &= check(foreignCount.load() == 0, "foreign domain receiver should not receive message");
+    ok &= check(discovered, "同域节点无需 remote 配置应可自动发现");
+    ok &= check(receiverCount.load() >= 1, "接收端至少应收到一条消息");
+    ok &= check(receiverLastValue.load() >= 100, "接收载荷应有效");
+    ok &= check(foreignCount.load() == 0, "异域接收端不应收到消息");
 
     receiver.shutdown();
     std::this_thread::sleep_for(std::chrono::milliseconds(3200));
 
     const bool publishAfterPeerOffline =
         sender.publishTopicByTopic<DiscoveryMsg>(topic, DiscoveryMsg{999});
-    ok &= check(!publishAfterPeerOffline, "peer TTL expiry should remove route from peer table");
+    ok &= check(!publishAfterPeerOffline, "TTL 过期后应从 peer 表移除路由");
 
     foreignDomainReceiver.shutdown();
     sender.shutdown();
@@ -141,6 +141,7 @@ bool runDiscoveryCase()
 int main()
 {
     const bool ok = runDiscoveryCase();
-    std::cout << "[stage10_discovery] result=" << (ok ? "ok" : "fail") << "\n";
+    std::cout << "[stage10_discovery] result=" << (ok ? "ok" : "fail")
+              << " 说明=" << (ok ? "通过" : "失败") << "\n";
     return ok ? 0 : 1;
 }

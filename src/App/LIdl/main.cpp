@@ -51,10 +51,10 @@ struct CommandLineOptions
  */
 void showVersion()
 {
-    std::cout << "lidl - Lightweight DDS IDL Compiler" << std::endl;
-    std::cout << "Version 1.0.0" << std::endl;
+    std::cout << "lidl - 轻量级 DDS IDL 编译器" << std::endl;
+    std::cout << "版本 1.0.0" << std::endl;
     std::cout << std::endl;
-    std::cout << "Copyright (c) 2024 LDdsFramework" << std::endl;
+    std::cout << "版权 (c) 2024 LDdsFramework" << std::endl;
 }
 
 /**
@@ -62,18 +62,18 @@ void showVersion()
  */
 void showHelp(const char* programName)
 {
-    std::cout << "Usage: " << programName << " [options] <input-files...>" << std::endl;
+    std::cout << "用法: " << programName << " [options] <input-files...>" << std::endl;
     std::cout << std::endl;
-    std::cout << "Options:" << std::endl;
-    std::cout << "  -h, --help                 Show this help message" << std::endl;
-    std::cout << "  -v, --version              Show version information" << std::endl;
-    std::cout << "  -o, --output <dir>         Set output directory (default: ./generated)" << std::endl;
-    std::cout << "  -l, --language <lang>      Set target language (default: cpp)" << std::endl;
-    std::cout << "  -I, --include <path>       Add include path" << std::endl;
-    std::cout << "  -s, --strict               Enable strict mode" << std::endl;
-    std::cout << "  -V, --verbose              Enable verbose output" << std::endl;
+    std::cout << "选项:" << std::endl;
+    std::cout << "  -h, --help                 显示帮助信息" << std::endl;
+    std::cout << "  -v, --version              显示版本信息" << std::endl;
+    std::cout << "  -o, --output <dir>         设置输出目录 (默认: ./generated)" << std::endl;
+    std::cout << "  -l, --language <lang>      设置目标语言 (默认: cpp)" << std::endl;
+    std::cout << "  -I, --include <path>       添加 include 路径" << std::endl;
+    std::cout << "  -s, --strict               启用严格模式" << std::endl;
+    std::cout << "  -V, --verbose              启用详细输出" << std::endl;
     std::cout << std::endl;
-    std::cout << "Supported languages:" << std::endl;
+    std::cout << "支持语言:" << std::endl;
     std::cout << "  cpp, csharp, java, python, go, rust, typescript" << std::endl;
 }
 
@@ -194,7 +194,7 @@ int main(int argc, char* argv[])
     {
         if (options.verbose)
         {
-            std::cout << "Processing: " << inputFile << std::endl;
+            std::cout << "正在处理: " << inputFile << std::endl;
         }
 
         LIdlParser parser(parseOptions);
@@ -202,7 +202,7 @@ int main(int argc, char* argv[])
 
         if (!parseResult.success)
         {
-            std::cerr << "Error: Failed to parse " << inputFile << std::endl;
+            std::cerr << "错误: 解析失败 " << inputFile << std::endl;
             for (const auto& error : parseResult.errors)
             {
                 std::cerr << "  [" << static_cast<int>(error.level) << "] "
@@ -222,15 +222,15 @@ int main(int argc, char* argv[])
 
         if (!genResult.success)
         {
-            std::cerr << "Error: Failed to generate code for " << inputFile << std::endl;
+            std::cerr << "错误: 代码生成失败 " << inputFile << std::endl;
             allSuccess = false;
             continue;
         }
 
         if (options.verbose)
         {
-            std::cout << "Generated: " << genResult.outputPath
-                      << " (" << genResult.linesGenerated << " lines)" << std::endl;
+            std::cout << "生成完成: " << genResult.outputPath
+                      << " (共 " << genResult.linesGenerated << " 行)" << std::endl;
         }
     }
 

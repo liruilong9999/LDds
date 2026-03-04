@@ -50,28 +50,28 @@ struct Options {
 
 void printUsage(const char* exe)
 {
-    std::cout << "Usage:\n";
-    std::cout << "  " << exe << " --protocol <udp|tcp> --mode <sender|receiver> [options]\n\n";
-    std::cout << "Options:\n";
-    std::cout << "  --bind <ip:port>          Local bind endpoint, default 0.0.0.0:0\n";
-    std::cout << "  --remote <ip:port>        Remote endpoint (required for sender unless broadcast)\n";
-    std::cout << "  --broadcast               Enable UDP broadcast and send to 255.255.255.255\n";
-    std::cout << "  --topic <u32>             Message topic, default 1\n";
-    std::cout << "  --sequence <u64>          Start sequence, default 1\n";
-    std::cout << "  --payload <text>          Message payload text, default hello\n";
-    std::cout << "  --count <n>               Sender message count, default 1\n";
-    std::cout << "  --interval-ms <n>         Sender interval ms, default 200\n";
-    std::cout << "  --expect <n>              Receiver expected messages, default 1\n";
-    std::cout << "  --timeout-ms <n>          Wait timeout ms, default 5000\n";
-    std::cout << "  --help                    Show this help\n\n";
-    std::cout << "Examples:\n";
-    std::cout << "  # UDP receiver\n";
+    std::cout << "用法:\n";
+    std::cout << "  " << exe << " --protocol <udp|tcp> --mode <sender|receiver> [选项]\n\n";
+    std::cout << "选项:\n";
+    std::cout << "  --bind <ip:port>          本地绑定端点，默认 0.0.0.0:0\n";
+    std::cout << "  --remote <ip:port>        远端端点（发送端必填，除非启用广播）\n";
+    std::cout << "  --broadcast               启用 UDP 广播并发送到 255.255.255.255\n";
+    std::cout << "  --topic <u32>             消息 Topic，默认 1\n";
+    std::cout << "  --sequence <u64>          起始序列号，默认 1\n";
+    std::cout << "  --payload <text>          消息文本载荷，默认 hello\n";
+    std::cout << "  --count <n>               发送消息数量，默认 1\n";
+    std::cout << "  --interval-ms <n>         发送间隔毫秒，默认 200\n";
+    std::cout << "  --expect <n>              接收端期望消息数，默认 1\n";
+    std::cout << "  --timeout-ms <n>          等待超时毫秒，默认 5000\n";
+    std::cout << "  --help                    显示帮助\n\n";
+    std::cout << "示例:\n";
+    std::cout << "  # UDP 接收端\n";
     std::cout << "  " << exe << " --protocol udp --mode receiver --bind 127.0.0.1:7001 --expect 3\n";
-    std::cout << "  # UDP sender\n";
+    std::cout << "  # UDP 发送端\n";
     std::cout << "  " << exe << " --protocol udp --mode sender --remote 127.0.0.1:7001 --count 3 --payload test\n";
-    std::cout << "  # TCP receiver(server)\n";
+    std::cout << "  # TCP 接收端(服务端)\n";
     std::cout << "  " << exe << " --protocol tcp --mode receiver --bind 127.0.0.1:7002 --expect 3\n";
-    std::cout << "  # TCP sender(client)\n";
+    std::cout << "  # TCP 发送端(客户端)\n";
     std::cout << "  " << exe << " --protocol tcp --mode sender --remote 127.0.0.1:7002 --count 3\n";
 }
 
@@ -170,34 +170,34 @@ bool parseArgs(int argc, char* argv[], Options& options)
 
         if (i + 1 >= argc &&
             arg != "--broadcast") {
-            std::cerr << "Missing value for argument: " << arg << "\n";
+            std::cerr << "参数缺少取值: " << arg << "\n";
             return false;
         }
 
         if (arg == "--protocol") {
             if (!parseProtocol(argv[++i], options.protocol)) {
-                std::cerr << "Invalid protocol\n";
+                std::cerr << "无效的协议，支持 udp/tcp\n";
                 return false;
             }
             continue;
         }
         if (arg == "--mode") {
             if (!parseMode(argv[++i], options.mode)) {
-                std::cerr << "Invalid mode\n";
+                std::cerr << "无效的模式，支持 sender/receiver\n";
                 return false;
             }
             continue;
         }
         if (arg == "--bind") {
             if (!parseEndpoint(argv[++i], options.bindAddress, options.bindPort)) {
-                std::cerr << "Invalid bind endpoint, expected ip:port\n";
+                std::cerr << "无效的本地绑定端点，格式应为 ip:port\n";
                 return false;
             }
             continue;
         }
         if (arg == "--remote") {
             if (!parseEndpoint(argv[++i], options.remoteAddress, options.remotePort)) {
-                std::cerr << "Invalid remote endpoint, expected ip:port\n";
+                std::cerr << "无效的远端端点，格式应为 ip:port\n";
                 return false;
             }
             continue;
@@ -212,60 +212,60 @@ bool parseArgs(int argc, char* argv[], Options& options)
         }
         if (arg == "--topic") {
             if (!parseU32(argv[++i], options.topic)) {
-                std::cerr << "Invalid topic\n";
+                std::cerr << "无效的 topic\n";
                 return false;
             }
             continue;
         }
         if (arg == "--sequence") {
             if (!parseU64(argv[++i], options.sequenceStart)) {
-                std::cerr << "Invalid sequence\n";
+                std::cerr << "无效的 sequence\n";
                 return false;
             }
             continue;
         }
         if (arg == "--count") {
             if (!parsePositiveInt(argv[++i], options.sendCount)) {
-                std::cerr << "Invalid count\n";
+                std::cerr << "无效的 count\n";
                 return false;
             }
             continue;
         }
         if (arg == "--interval-ms") {
             if (!parsePositiveInt(argv[++i], options.sendIntervalMs)) {
-                std::cerr << "Invalid interval-ms\n";
+                std::cerr << "无效的 interval-ms\n";
                 return false;
             }
             continue;
         }
         if (arg == "--expect") {
             if (!parsePositiveInt(argv[++i], options.expectCount)) {
-                std::cerr << "Invalid expect\n";
+                std::cerr << "无效的 expect\n";
                 return false;
             }
             continue;
         }
         if (arg == "--timeout-ms") {
             if (!parsePositiveInt(argv[++i], options.timeoutMs)) {
-                std::cerr << "Invalid timeout-ms\n";
+                std::cerr << "无效的 timeout-ms\n";
                 return false;
             }
             continue;
         }
 
-        std::cerr << "Unknown argument: " << arg << "\n";
+        std::cerr << "未知参数: " << arg << "\n";
         return false;
     }
 
     if (options.mode == RunMode::Sender) {
         if (options.remotePort == 0) {
-            std::cerr << "Sender requires --remote ip:port\n";
+            std::cerr << "发送端必须提供 --remote ip:port\n";
             return false;
         }
     }
 
     if (options.enableBroadcast && options.protocol != TransportProtocol::UDP) {
-        std::cerr << "--broadcast is only valid with UDP\n";
+        std::cerr << "--broadcast 仅支持 UDP\n";
         return false;
     }
 
@@ -294,14 +294,14 @@ int runSender(const Options& options)
     transport->setConfig(toConfig(options));
 
     if (!transport->start()) {
-        std::cerr << "start() failed: " << transport->getLastError().toStdString() << "\n";
+        std::cerr << "启动传输失败: " << transport->getLastError().toStdString() << "\n";
         return EXIT_FAILURE;
     }
 
     if (options.enableBroadcast) {
         const QHostAddress broadcastAddress = QHostAddress::Broadcast;
         if (!transport->setDefaultRemote(broadcastAddress, options.remotePort)) {
-            std::cerr << "setDefaultRemote(broadcast) failed: "
+            std::cerr << "设置广播默认远端失败: "
                       << transport->getLastError().toStdString() << "\n";
             transport->stop();
             return EXIT_FAILURE;
@@ -309,7 +309,7 @@ int runSender(const Options& options)
     } else {
         const QHostAddress remoteAddress(QString::fromStdString(options.remoteAddress));
         if (!transport->setDefaultRemote(remoteAddress, options.remotePort)) {
-            std::cerr << "setDefaultRemote() failed: "
+            std::cerr << "设置默认远端失败: "
                       << transport->getLastError().toStdString() << "\n";
             transport->stop();
             return EXIT_FAILURE;
@@ -325,10 +325,10 @@ int runSender(const Options& options)
         if (ok) {
             ++sentOk;
             std::cout << "[SEND] seq=" << (options.sequenceStart + static_cast<uint64_t>(i))
-                      << " size=" << payload.size() << " bytes\n";
+                      << " 大小=" << payload.size() << " 字节\n";
         } else {
             std::cout << "[SEND-FAIL] seq=" << (options.sequenceStart + static_cast<uint64_t>(i))
-                      << " error=" << transport->getLastError().toStdString() << "\n";
+                      << " 错误=" << transport->getLastError().toStdString() << "\n";
         }
 
         if (i + 1 < options.sendCount && options.sendIntervalMs > 0) {
@@ -339,7 +339,7 @@ int runSender(const Options& options)
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     transport->stop();
 
-    std::cout << "Sender done, success=" << sentOk << "/" << options.sendCount << "\n";
+    std::cout << "发送端完成，成功=" << sentOk << "/" << options.sendCount << "\n";
     return (sentOk == options.sendCount) ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
@@ -363,26 +363,27 @@ int runReceiver(const Options& options)
             std::cout << "[RECV] #" << current
                       << " topic=" << message.getTopic()
                       << " seq=" << message.getSequence()
-                      << " size=" << message.getPayloadSize()
-                      << " from=" << sender.toString().toStdString()
+                      << " 大小=" << message.getPayloadSize()
+                      << " 来源=" << sender.toString().toStdString()
                       << ":" << senderPort
-                      << " payload=\"" << payloadText << "\"\n";
+                      << " 载荷=\"" << payloadText << "\"\n";
 
             waitCv.notify_all();
         }
     );
 
     if (!transport->start()) {
-        std::cerr << "start() failed: " << transport->getLastError().toStdString() << "\n";
+        std::cerr << "启动传输失败: " << transport->getLastError().toStdString() << "\n";
         return EXIT_FAILURE;
     }
 
-    std::cout << "Receiver started, protocol="
+    std::cout << "接收端已启动，协议="
               << (options.protocol == TransportProtocol::UDP ? "udp" : "tcp")
-              << " bind=" << options.bindAddress
+              << " 绑定="
+              << options.bindAddress
               << ":" << transport->getBoundPort()
-              << " expect=" << options.expectCount
-              << " timeoutMs=" << options.timeoutMs
+              << " 期望消息数=" << options.expectCount
+              << " 超时毫秒=" << options.timeoutMs
               << "\n";
 
     bool reachedTarget = false;
@@ -397,8 +398,8 @@ int runReceiver(const Options& options)
 
     transport->stop();
 
-    std::cout << "Receiver done, received=" << receivedCount.load()
-              << " expected=" << options.expectCount << "\n";
+    std::cout << "接收端结束，已接收=" << receivedCount.load()
+              << " 期望=" << options.expectCount << "\n";
     return reachedTarget ? EXIT_SUCCESS : EXIT_FAILURE;
 }
 
@@ -422,10 +423,10 @@ int main(int argc, char* argv[])
         }
         return runReceiver(options);
     } catch (const std::exception& ex) {
-        std::cerr << "Unhandled exception: " << ex.what() << "\n";
+        std::cerr << "未处理异常: " << ex.what() << "\n";
         return EXIT_FAILURE;
     } catch (...) {
-        std::cerr << "Unhandled unknown exception\n";
+        std::cerr << "未处理的未知异常\n";
         return EXIT_FAILURE;
     }
 }

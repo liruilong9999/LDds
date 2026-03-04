@@ -20,7 +20,7 @@ struct DomainMsg {
 bool check(bool condition, const std::string& message)
 {
     if (!condition) {
-        std::cerr << "[stage1_domain] FAIL: " << message << "\n";
+        std::cerr << "[stage1_domain] FAIL(失败): " << message << "\n";
         return false;
     }
     return true;
@@ -37,17 +37,17 @@ bool runQosAndXmlChecks()
             "<qos domainId=\"7\" transportType=\"udp\" historyDepth=\"4\" deadlineMs=\"120\" reliable=\"true\" "
             "enableDomainPortMapping=\"true\" basePort=\"21000\" domainPortOffset=\"8\"/>",
             &error),
-        "xml with domainId/port mapping should load"
+        "包含 domainId/端口映射 的 XML 应成功加载"
     );
     if (!ok) {
-        std::cerr << "[stage1_domain] xml error: " << error << "\n";
+        std::cerr << "[stage1_domain] XML错误: " << error << "\n";
         return false;
     }
 
-    ok &= check(qos.domainId == 7, "domainId should be 7 from xml");
-    ok &= check(qos.enableDomainPortMapping, "enableDomainPortMapping should be true");
-    ok &= check(qos.basePort == 21000, "basePort should be 21000");
-    ok &= check(qos.domainPortOffset == 8, "domainPortOffset should be 8");
+    ok &= check(qos.domainId == 7, "XML读取后的 domainId 应为 7");
+    ok &= check(qos.enableDomainPortMapping, "enableDomainPortMapping 应为 true");
+    ok &= check(qos.basePort == 21000, "basePort 应为 21000");
+    ok &= check(qos.domainPortOffset == 8, "domainPortOffset 应为 8");
 
     LQos publisherQos;
     LQos subscriberQos;
@@ -56,10 +56,10 @@ bool runQosAndXmlChecks()
 
     std::string compatibleError;
     const bool compatible = publisherQos.isCompatibleWith(subscriberQos, compatibleError);
-    ok &= check(!compatible, "different domainId should be incompatible");
+    ok &= check(!compatible, "不同 domainId 应判定为不兼容");
     ok &= check(
         compatibleError.find("domainId") != std::string::npos,
-        "incompatible reason should mention domainId"
+        "不兼容原因应包含 domainId"
     );
 
     return ok;
@@ -90,8 +90,8 @@ bool runDomainPortMappingChecks()
     LDds ddsDomain0;
     LDds ddsDomain1;
 
-    ok &= check(ddsDomain0.initialize(qosDomain0, cfg0), "domain0 with mapping should initialize");
-    ok &= check(ddsDomain1.initialize(qosDomain1, cfg1), "domain1 with mapping should initialize");
+    ok &= check(ddsDomain0.initialize(qosDomain0, cfg0), "启用映射时 domain0 应初始化成功");
+    ok &= check(ddsDomain1.initialize(qosDomain1, cfg1), "启用映射时 domain1 应初始化成功");
 
     ddsDomain1.shutdown();
     ddsDomain0.shutdown();
@@ -109,9 +109,9 @@ bool runDomainPortMappingChecks()
     LDds noMapA;
     LDds noMapB;
 
-    ok &= check(noMapA.initialize(qosNoMapping, noMapCfgA, 0), "no-mapping instance A should initialize");
+    ok &= check(noMapA.initialize(qosNoMapping, noMapCfgA, 0), "关闭映射时实例A应初始化成功");
     const bool secondNoMapInit = noMapB.initialize(qosNoMapping, noMapCfgB, 1);
-    ok &= check(!secondNoMapInit, "no-mapping instance B same bind port should fail");
+    ok &= check(!secondNoMapInit, "关闭映射且同端口时实例B应初始化失败");
 
     noMapB.shutdown();
     noMapA.shutdown();
@@ -169,27 +169,27 @@ bool runCrossDomainFilteringChecks()
     sameSenderCfg.remoteAddress = "127.0.0.1";
     sameSenderCfg.remotePort = 25200;
 
-    ok &= check(receiver.initialize(receiverQos, receiverCfg), "receiver initialize should succeed");
+    ok &= check(receiver.initialize(receiverQos, receiverCfg), "接收端初始化应成功");
     ok &= check(
         senderCrossDomain.initialize(crossSenderQos, crossSenderCfg),
-        "cross-domain sender initialize should succeed"
+        "跨域发送端初始化应成功"
     );
     ok &= check(
         senderSameDomain.initialize(sameSenderQos, sameSenderCfg),
-        "same-domain sender initialize should succeed"
+        "同域发送端初始化应成功"
     );
 
     ok &= check(
         senderCrossDomain.publishTopicByTopic<DomainMsg>(topic, DomainMsg{101}),
-        "cross-domain publish should succeed"
+        "跨域发布应成功"
     );
 
     std::this_thread::sleep_for(std::chrono::milliseconds(250));
-    ok &= check(receivedCount.load() == 0, "receiver should ignore cross-domain message");
+    ok &= check(receivedCount.load() == 0, "接收端应忽略跨域消息");
 
     ok &= check(
         senderSameDomain.publishTopicByTopic<DomainMsg>(topic, DomainMsg{202}),
-        "same-domain publish should succeed"
+        "同域发布应成功"
     );
 
     bool gotSameDomainMessage = false;
@@ -200,8 +200,8 @@ bool runCrossDomainFilteringChecks()
         });
     }
 
-    ok &= check(gotSameDomainMessage, "receiver should get same-domain message");
-    ok &= check(lastValue.load() == 202, "same-domain message payload should match");
+    ok &= check(gotSameDomainMessage, "接收端应收到同域消息");
+    ok &= check(lastValue.load() == 202, "同域消息载荷应匹配");
 
     senderSameDomain.shutdown();
     senderCrossDomain.shutdown();
@@ -220,6 +220,7 @@ int main()
     ok &= runDomainPortMappingChecks();
     ok &= runCrossDomainFilteringChecks();
 
-    std::cout << "[stage1_domain] domain_stage=" << (ok ? "ok" : "fail") << "\n";
+    std::cout << "[stage1_domain] domain_stage=" << (ok ? "ok" : "fail")
+              << " 说明=" << (ok ? "通过" : "失败") << "\n";
     return ok ? 0 : 1;
 }
