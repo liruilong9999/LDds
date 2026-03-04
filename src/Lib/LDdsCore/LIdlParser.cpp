@@ -4,6 +4,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <regex>
 #include <sstream>
 #include <unordered_map>
@@ -19,6 +20,8 @@ struct ParseContext
     std::shared_ptr<LIdlFile>                      ast;
     std::unordered_set<std::string>                parsedFiles;
     std::unordered_map<std::string, std::string>   structOwners;
+    std::unordered_map<std::string, std::string>   enumOwners;
+    std::unordered_map<std::string, std::string>   unionOwners;
     std::unordered_map<std::string, std::string>   topicNameOwners;
     std::unordered_map<std::string, std::string>   topicTypeToName;
 };
@@ -27,11 +30,22 @@ struct LineState
 {
     std::vector<std::string>         packageStack;
     bool                             inStruct = false;
+    bool                             inEnum = false;
+    bool                             inUnion = false;
     bool                             waitingPackageBrace = false;
     bool                             waitingStructBrace = false;
+    bool                             waitingEnumBrace = false;
+    bool                             waitingUnionBrace = false;
     std::string                      waitingPackageName;
     LIdlStruct                       currentStruct;
     LIdlStruct                       pendingStruct;
+    LIdlEnum                         currentEnum;
+    LIdlEnum                         pendingEnum;
+    int64_t                          nextEnumValue = 0;
+    LIdlUnion                        currentUnion;
+    LIdlUnion                        pendingUnion;
+    std::vector<int64_t>             pendingUnionLabels;
+    bool                             pendingUnionDefault = false;
     std::vector<LIdlFieldAttribute>  pendingFieldAttributes;
     std::string                      pendingComment;
     std::string                      pendingTopicComment;
@@ -119,6 +133,63 @@ std::string unquote(const std::string & value)
         }
     }
     return out;
+}
+
+bool parseSignedInt64(const std::string & text, int64_t & valueOut)
+{
+    const std::string normalized = trim(text);
+    if (normalized.empty())
+    {
+        return false;
+    }
+
+    try
+    {
+        size_t pos = 0;
+        const long long parsed = std::stoll(normalized, &pos, 10);
+        if (pos != normalized.size())
+        {
+            return false;
+        }
+        valueOut = static_cast<int64_t>(parsed);
+        return true;
+    }
+    catch (...)
+    {
+        return false;
+    }
+}
+
+bool parseSequenceType(
+    const std::string & rawType,
+    std::string &       elementTypeOut,
+    int32_t &           boundOut)
+{
+    const std::string type = trim(rawType);
+    const std::regex sequencePattern(
+        R"(^sequence\s*<\s*([^,>]+(?:\s*::\s*[^,>]+)*)\s*(?:,\s*([0-9]+)\s*)?>\s*$)");
+    std::smatch match;
+    if (!std::regex_match(type, match, sequencePattern))
+    {
+        return false;
+    }
+
+    elementTypeOut = trim(match[1].str());
+    boundOut = -1;
+    if (match[2].matched)
+    {
+        int64_t parsedBound = -1;
+        if (!parseSignedInt64(match[2].str(), parsedBound))
+        {
+            return false;
+        }
+        if (parsedBound < 0 || parsedBound > static_cast<int64_t>(std::numeric_limits<int32_t>::max()))
+        {
+            return false;
+        }
+        boundOut = static_cast<int32_t>(parsedBound);
+    }
+    return !elementTypeOut.empty();
 }
 
 std::string stripInlineComment(const std::string & line, std::string & comment)
@@ -446,6 +517,54 @@ bool addStructWithConflictCheck(
     return true;
 }
 
+bool addEnumWithConflictCheck(
+    ParseContext &            context,
+    std::vector<ParseError> & errors,
+    const LIdlEnum &          en)
+{
+    const auto it = context.enumOwners.find(en.fullName);
+    if (it != context.enumOwners.end())
+    {
+        addError(
+            errors,
+            ParseErrorLevel::Error,
+            "duplicate enum definition: " + en.fullName,
+            en.sourceFile,
+            en.line,
+            1
+        );
+        return false;
+    }
+
+    context.enumOwners[en.fullName] = en.sourceFile;
+    context.ast->enums.push_back(en);
+    return true;
+}
+
+bool addUnionWithConflictCheck(
+    ParseContext &            context,
+    std::vector<ParseError> & errors,
+    const LIdlUnion &         un)
+{
+    const auto it = context.unionOwners.find(un.fullName);
+    if (it != context.unionOwners.end())
+    {
+        addError(
+            errors,
+            ParseErrorLevel::Error,
+            "duplicate union definition: " + un.fullName,
+            un.sourceFile,
+            un.line,
+            1
+        );
+        return false;
+    }
+
+    context.unionOwners[un.fullName] = un.sourceFile;
+    context.ast->unions.push_back(un);
+    return true;
+}
+
 bool addTopicWithConflictCheck(
     ParseContext &            context,
     std::vector<ParseError> & errors,
@@ -517,6 +636,15 @@ bool parseContent(
     const std::regex includePattern(R"(^\s*#include\s*[<\"]([^>\"]+)[>\"]\s*;?\s*$)");
     const std::regex packagePattern(R"(^\s*package\s+([A-Za-z_][A-Za-z0-9_]*)\s*(\{)?\s*;?\s*$)");
     const std::regex structPattern(R"(^\s*struct\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?::\s*extend\s+([A-Za-z_][A-Za-z0-9_:]*))?\s*(\{)?\s*$)");
+    const std::regex enumPattern(R"(^\s*enum\s+([A-Za-z_][A-Za-z0-9_]*)\s*(\{)?\s*$)");
+    const std::regex enumValuePattern(R"(^\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:=\s*([-+]?[0-9]+))?\s*,?\s*$)");
+    const std::regex unionPattern(R"(^\s*union\s+([A-Za-z_][A-Za-z0-9_]*)\s+switch\s*\(\s*([A-Za-z_][A-Za-z0-9_:]*)\s*\)\s*(\{)?\s*$)");
+    const std::regex caseLabelPattern(R"(^\s*case\s+([-+]?[0-9]+)\s*:\s*$)");
+    const std::regex defaultLabelPattern(R"(^\s*default\s*:\s*$)");
+    const std::regex caseInlineFieldPattern(
+        R"(^\s*case\s+([-+]?[0-9]+)\s*:\s*([^;]+?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*;\s*$)");
+    const std::regex defaultInlineFieldPattern(
+        R"(^\s*default\s*:\s*([^;]+?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*;\s*$)");
     const std::regex topicPattern(R"(^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([A-Za-z_][A-Za-z0-9_:]*)\s*;?\s*$)");
     const std::regex fieldPattern(R"(^\s*([^;]+?)\s+([A-Za-z_][A-Za-z0-9_]*)\s*;\s*$)");
 
@@ -567,6 +695,33 @@ bool parseContent(
             }
         }
 
+        if (state.waitingEnumBrace)
+        {
+            if (code == "{")
+            {
+                state.currentEnum = state.pendingEnum;
+                state.pendingEnum = LIdlEnum();
+                state.waitingEnumBrace = false;
+                state.inEnum = true;
+                state.nextEnumValue = 0;
+                continue;
+            }
+        }
+
+        if (state.waitingUnionBrace)
+        {
+            if (code == "{")
+            {
+                state.currentUnion = state.pendingUnion;
+                state.pendingUnion = LIdlUnion();
+                state.waitingUnionBrace = false;
+                state.inUnion = true;
+                state.pendingUnionLabels.clear();
+                state.pendingUnionDefault = false;
+                continue;
+            }
+        }
+
         if (code.empty())
         {
             if (!options.ignoreComments && !inlineComment.empty())
@@ -609,6 +764,14 @@ bool parseContent(
                 field.name = trim(fieldMatch[2].str());
                 field.line = lineNo;
                 field.attributes = state.pendingFieldAttributes;
+                std::string sequenceElementType;
+                int32_t sequenceBound = -1;
+                if (parseSequenceType(field.typeName, sequenceElementType, sequenceBound))
+                {
+                    field.isSequence = true;
+                    field.sequenceElementType = sequenceElementType;
+                    field.sequenceBound = sequenceBound;
+                }
 
                 for (const auto & attr : field.attributes)
                 {
@@ -647,6 +810,200 @@ bool parseContent(
                     lineNo,
                     1
                 );
+            }
+            continue;
+        }
+
+        if (state.inEnum)
+        {
+            if (!code.empty() && code[0] == '}')
+            {
+                addEnumWithConflictCheck(context, errors, state.currentEnum);
+                state.currentEnum = LIdlEnum();
+                state.inEnum = false;
+                state.nextEnumValue = 0;
+                continue;
+            }
+
+            std::smatch enumValueMatch;
+            if (std::regex_match(code, enumValueMatch, enumValuePattern))
+            {
+                LIdlEnumValue enumValue;
+                enumValue.name = trim(enumValueMatch[1].str());
+                enumValue.line = lineNo;
+                enumValue.comment = inlineComment;
+
+                if (enumValueMatch[2].matched)
+                {
+                    int64_t parsedValue = 0;
+                    if (!parseSignedInt64(enumValueMatch[2].str(), parsedValue))
+                    {
+                        addError(
+                            errors,
+                            ParseErrorLevel::Error,
+                            "invalid enum value: " + enumValueMatch[2].str(),
+                            sourceName,
+                            lineNo,
+                            1);
+                        continue;
+                    }
+                    enumValue.hasExplicitValue = true;
+                    enumValue.value = parsedValue;
+                    state.nextEnumValue = parsedValue + 1;
+                }
+                else
+                {
+                    enumValue.value = state.nextEnumValue++;
+                    enumValue.hasExplicitValue = false;
+                }
+
+                state.currentEnum.values.push_back(std::move(enumValue));
+                continue;
+            }
+
+            if (options.strictMode)
+            {
+                addError(
+                    errors,
+                    ParseErrorLevel::Warning,
+                    "unrecognized enum line: " + code,
+                    sourceName,
+                    lineNo,
+                    1);
+            }
+            continue;
+        }
+
+        if (state.inUnion)
+        {
+            if (!code.empty() && code[0] == '}')
+            {
+                addUnionWithConflictCheck(context, errors, state.currentUnion);
+                state.currentUnion = LIdlUnion();
+                state.inUnion = false;
+                state.pendingUnionLabels.clear();
+                state.pendingUnionDefault = false;
+                continue;
+            }
+
+            std::smatch unionMatch;
+            if (std::regex_match(code, unionMatch, caseInlineFieldPattern) ||
+                std::regex_match(code, unionMatch, defaultInlineFieldPattern))
+            {
+                LIdlUnionCase unionCase;
+                std::string typeText;
+                std::string nameText;
+
+                if (unionMatch.size() == 4)
+                {
+                    int64_t labelValue = 0;
+                    if (!parseSignedInt64(unionMatch[1].str(), labelValue))
+                    {
+                        addError(
+                            errors,
+                            ParseErrorLevel::Error,
+                            "invalid union case label: " + unionMatch[1].str(),
+                            sourceName,
+                            lineNo,
+                            1);
+                        continue;
+                    }
+                    unionCase.labels.push_back(labelValue);
+                    typeText = trim(unionMatch[2].str());
+                    nameText = trim(unionMatch[3].str());
+                }
+                else if (unionMatch.size() == 3)
+                {
+                    unionCase.isDefault = true;
+                    typeText = trim(unionMatch[1].str());
+                    nameText = trim(unionMatch[2].str());
+                }
+
+                unionCase.field.typeName = typeText;
+                unionCase.field.name = nameText;
+                unionCase.field.line = lineNo;
+                std::string sequenceElementType;
+                int32_t sequenceBound = -1;
+                if (parseSequenceType(unionCase.field.typeName, sequenceElementType, sequenceBound))
+                {
+                    unionCase.field.isSequence = true;
+                    unionCase.field.sequenceElementType = sequenceElementType;
+                    unionCase.field.sequenceBound = sequenceBound;
+                }
+                state.currentUnion.cases.push_back(std::move(unionCase));
+                continue;
+            }
+
+            if (std::regex_match(code, unionMatch, caseLabelPattern))
+            {
+                int64_t labelValue = 0;
+                if (!parseSignedInt64(unionMatch[1].str(), labelValue))
+                {
+                    addError(
+                        errors,
+                        ParseErrorLevel::Error,
+                        "invalid union case label: " + unionMatch[1].str(),
+                        sourceName,
+                        lineNo,
+                        1);
+                    continue;
+                }
+                state.pendingUnionLabels.push_back(labelValue);
+                state.pendingUnionDefault = false;
+                continue;
+            }
+
+            if (std::regex_match(code, unionMatch, defaultLabelPattern))
+            {
+                state.pendingUnionDefault = true;
+                continue;
+            }
+
+            if (std::regex_match(code, unionMatch, fieldPattern))
+            {
+                if (state.pendingUnionLabels.empty() && !state.pendingUnionDefault)
+                {
+                    addError(
+                        errors,
+                        ParseErrorLevel::Error,
+                        "union field requires case/default label",
+                        sourceName,
+                        lineNo,
+                        1);
+                    continue;
+                }
+
+                LIdlUnionCase unionCase;
+                unionCase.labels = state.pendingUnionLabels;
+                unionCase.isDefault = state.pendingUnionDefault;
+                unionCase.field.typeName = trim(unionMatch[1].str());
+                unionCase.field.name = trim(unionMatch[2].str());
+                unionCase.field.line = lineNo;
+                unionCase.field.comment = inlineComment;
+                std::string sequenceElementType;
+                int32_t sequenceBound = -1;
+                if (parseSequenceType(unionCase.field.typeName, sequenceElementType, sequenceBound))
+                {
+                    unionCase.field.isSequence = true;
+                    unionCase.field.sequenceElementType = sequenceElementType;
+                    unionCase.field.sequenceBound = sequenceBound;
+                }
+
+                state.currentUnion.cases.push_back(std::move(unionCase));
+                state.pendingUnionLabels.clear();
+                state.pendingUnionDefault = false;
+                continue;
+            }
+
+            if (options.strictMode)
+            {
+                addError(
+                    errors,
+                    ParseErrorLevel::Warning,
+                    "unrecognized union line: " + code,
+                    sourceName,
+                    lineNo,
+                    1);
             }
             continue;
         }
@@ -739,6 +1096,60 @@ bool parseContent(
             continue;
         }
 
+        if (std::regex_match(code, match, enumPattern))
+        {
+            LIdlEnum en;
+            en.name = trim(match[1].str());
+            en.packagePath = joinPackage(state.packageStack);
+            en.fullName = en.packagePath.empty() ? en.name : (en.packagePath + "::" + en.name);
+            en.sourceFile = sourceName;
+            en.line = lineNo;
+            en.comment = state.pendingComment;
+            state.pendingComment.clear();
+
+            const bool hasBrace = match[2].matched;
+            if (hasBrace)
+            {
+                state.currentEnum = std::move(en);
+                state.inEnum = true;
+                state.nextEnumValue = 0;
+            }
+            else
+            {
+                state.pendingEnum = std::move(en);
+                state.waitingEnumBrace = true;
+            }
+            continue;
+        }
+
+        if (std::regex_match(code, match, unionPattern))
+        {
+            LIdlUnion un;
+            un.name = trim(match[1].str());
+            un.discriminatorType = trim(match[2].str());
+            un.packagePath = joinPackage(state.packageStack);
+            un.fullName = un.packagePath.empty() ? un.name : (un.packagePath + "::" + un.name);
+            un.sourceFile = sourceName;
+            un.line = lineNo;
+            un.comment = state.pendingComment;
+            state.pendingComment.clear();
+
+            const bool hasBrace = match[3].matched;
+            if (hasBrace)
+            {
+                state.currentUnion = std::move(un);
+                state.inUnion = true;
+                state.pendingUnionLabels.clear();
+                state.pendingUnionDefault = false;
+            }
+            else
+            {
+                state.pendingUnion = std::move(un);
+                state.waitingUnionBrace = true;
+            }
+            continue;
+        }
+
         if (code[0] == '[')
         {
             const auto closePos = code.rfind(']');
@@ -820,6 +1231,39 @@ bool parseContent(
             "unterminated struct declaration: " + state.currentStruct.fullName,
             sourceName,
             state.currentStruct.line,
+            1
+        );
+    }
+    if (state.inEnum)
+    {
+        addError(
+            errors,
+            ParseErrorLevel::Error,
+            "unterminated enum declaration: " + state.currentEnum.fullName,
+            sourceName,
+            state.currentEnum.line,
+            1
+        );
+    }
+    if (state.inUnion)
+    {
+        addError(
+            errors,
+            ParseErrorLevel::Error,
+            "unterminated union declaration: " + state.currentUnion.fullName,
+            sourceName,
+            state.currentUnion.line,
+            1
+        );
+    }
+    if (state.waitingStructBrace || state.waitingEnumBrace || state.waitingUnionBrace)
+    {
+        addError(
+            errors,
+            ParseErrorLevel::Error,
+            "declaration missing opening brace",
+            sourceName,
+            totalLines,
             1
         );
     }

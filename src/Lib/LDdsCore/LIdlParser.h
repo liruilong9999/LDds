@@ -71,9 +71,75 @@ struct LIdlField
     std::string                      comment;
     std::vector<LIdlFieldAttribute>  attributes;
     std::string                      defaultValue;
+    bool                             isSequence;
+    std::string                      sequenceElementType;
+    int32_t                          sequenceBound;
     uint32_t                         line;
 
     LIdlField()
+        : isSequence(false)
+        , sequenceBound(-1)
+        , line(0)
+    {
+    }
+};
+
+struct LIdlEnumValue
+{
+    std::string name;
+    int64_t     value;
+    bool        hasExplicitValue;
+    std::string comment;
+    uint32_t    line;
+
+    LIdlEnumValue()
+        : value(0)
+        , hasExplicitValue(false)
+        , line(0)
+    {
+    }
+};
+
+struct LIdlEnum
+{
+    std::string                 name;
+    std::string                 fullName;
+    std::string                 packagePath;
+    std::string                 comment;
+    std::string                 sourceFile;
+    uint32_t                    line;
+    std::vector<LIdlEnumValue>  values;
+
+    LIdlEnum()
+        : line(0)
+    {
+    }
+};
+
+struct LIdlUnionCase
+{
+    std::vector<int64_t> labels;
+    bool                 isDefault;
+    LIdlField            field;
+
+    LIdlUnionCase()
+        : isDefault(false)
+    {
+    }
+};
+
+struct LIdlUnion
+{
+    std::string                 name;
+    std::string                 fullName;
+    std::string                 packagePath;
+    std::string                 discriminatorType;
+    std::string                 comment;
+    std::string                 sourceFile;
+    uint32_t                    line;
+    std::vector<LIdlUnionCase>  cases;
+
+    LIdlUnion()
         : line(0)
     {
     }
@@ -131,7 +197,9 @@ struct LIdlFile : AstNode
     std::string              sourcePath;
     std::vector<std::string> includeFiles;
     std::vector<LIdlPackage> packages;
+    std::vector<LIdlEnum>    enums;
     std::vector<LIdlStruct>  structs;
+    std::vector<LIdlUnion>   unions;
     std::vector<LIdlTopic>   topics;
 };
 

@@ -9,6 +9,7 @@
 #include <set>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "LIdlParser.h"
 
@@ -24,6 +25,7 @@ struct TypeInfo
         Primitive,
         String,
         Vector,
+        Enum,
         Custom
     };
 
@@ -153,7 +155,9 @@ std::vector<std::string> splitNs(const std::string & ns)
     return parts;
 }
 
-TypeInfo parseType(const std::string & rawType)
+TypeInfo parseType(
+    const std::string & rawType,
+    const std::unordered_set<std::string> * enumTypeNames = nullptr)
 {
     static const std::unordered_map<std::string, std::string> primitives = {
         {"bool", "bool"},
@@ -199,12 +203,42 @@ TypeInfo parseType(const std::string & rawType)
         return info;
     }
 
+    const std::string sequencePrefix = "sequence<";
+    if (lowerType.rfind(sequencePrefix, 0) == 0 && !type.empty() && type.back() == '>')
+    {
+        const std::string inner = trim(type.substr(sequencePrefix.size(), type.size() - sequencePrefix.size() - 1));
+        std::string elemRaw = inner;
+        const auto commaPos = inner.find(',');
+        if (commaPos != std::string::npos)
+        {
+            elemRaw = trim(inner.substr(0, commaPos));
+        }
+
+        TypeInfo elemInfo = parseType(elemRaw, enumTypeNames);
+        info.kind = TypeInfo::Kind::Vector;
+        info.elementType = elemRaw;
+        info.elementKind = elemInfo.kind;
+        info.elementCppType = elemInfo.cppType;
+        info.cppType = "std::vector<" + elemInfo.cppType + ">";
+        return info;
+    }
+
     const auto it = primitives.find(lowerType);
     if (it != primitives.end())
     {
         info.kind = TypeInfo::Kind::Primitive;
         info.cppType = it->second;
         return info;
+    }
+
+    if (enumTypeNames != nullptr)
+    {
+        if (enumTypeNames->find(type) != enumTypeNames->end())
+        {
+            info.kind = TypeInfo::Kind::Enum;
+            info.cppType = type;
+            return info;
+        }
     }
 
     info.kind = TypeInfo::Kind::Custom;
@@ -335,6 +369,13 @@ std::string generateDefineHeader(
         topicByType[topic.typeName] = topic.id;
     }
 
+    std::unordered_set<std::string> enumTypeNames;
+    for (const auto & en : file.enums)
+    {
+        enumTypeNames.insert(en.fullName);
+        enumTypeNames.insert(en.name);
+    }
+
     std::ostringstream out;
     out << "#ifndef " << guard << "\n";
     out << "#define " << guard << "\n\n";
@@ -377,8 +418,60 @@ std::string generateDefineHeader(
     out << "    offset += size;\n";
     out << "    return true;\n";
     out << "}\n";
+    out << "template<typename T>\n";
+    out << "inline typename std::enable_if<std::is_enum<T>::value, void>::type\n";
+    out << "writeEnum(LByteBuffer & buffer, T value)\n";
+    out << "{\n";
+    out << "    const int32_t raw = static_cast<int32_t>(value);\n";
+    out << "    writePod(buffer, raw);\n";
+    out << "}\n\n";
+    out << "template<typename T>\n";
+    out << "inline typename std::enable_if<std::is_enum<T>::value, bool>::type\n";
+    out << "readEnum(const std::vector<uint8_t> & data, size_t & offset, T & value)\n";
+    out << "{\n";
+    out << "    int32_t raw = 0;\n";
+    out << "    if (!readPod(data, offset, raw)) { return false; }\n";
+    out << "    value = static_cast<T>(raw);\n";
+    out << "    return true;\n";
+    out << "}\n";
     out << "} // namespace idl_detail\n";
     out << "} // namespace LDdsFramework\n\n";
+
+    for (const auto & en : file.enums)
+    {
+        const auto nsParts = splitNs(en.packagePath);
+        openNamespaces(out, nsParts);
+        if (!en.comment.empty())
+        {
+            out << "// " << en.comment << "\n";
+        }
+        out << "enum class " << en.name << " : int32_t\n";
+        out << "{\n";
+        if (en.values.empty())
+        {
+            out << "    Invalid = 0\n";
+        }
+        else
+        {
+            for (size_t i = 0; i < en.values.size(); ++i)
+            {
+                const auto & item = en.values[i];
+                out << "    " << item.name << " = " << item.value;
+                if (i + 1 < en.values.size())
+                {
+                    out << ",";
+                }
+                if (!item.comment.empty())
+                {
+                    out << " // " << item.comment;
+                }
+                out << "\n";
+            }
+        }
+        out << "};\n";
+        closeNamespaces(out, nsParts);
+        out << "\n";
+    }
 
     const auto order = topologicalStructOrder(file.structs);
     for (size_t ordIdx = 0; ordIdx < order.size(); ++ordIdx)
@@ -392,7 +485,7 @@ std::string generateDefineHeader(
             out << "// " << st.comment << "\n";
         }
 
-        out << "struct " << exportMacro << " " << st.name;
+        out << "struct " << st.name;
         if (!st.parentType.empty())
         {
             out << " : public " << st.parentType;
@@ -407,7 +500,7 @@ std::string generateDefineHeader(
 
         for (const auto & field : st.fields)
         {
-            TypeInfo info = parseType(field.typeName);
+            TypeInfo info = parseType(field.typeName, &enumTypeNames);
             const std::string defaultValue = normalizeDefaultValue(field.defaultValue, info);
             if (!defaultValue.empty())
             {
@@ -435,7 +528,7 @@ std::string generateDefineHeader(
 
         for (const auto & field : st.fields)
         {
-            TypeInfo info = parseType(field.typeName);
+            TypeInfo info = parseType(field.typeName, &enumTypeNames);
             out << "    " << info.cppType << " " << field.name << ";";
             if (!field.comment.empty())
             {
@@ -454,10 +547,14 @@ std::string generateDefineHeader(
 
         for (const auto & field : st.fields)
         {
-            const TypeInfo info = parseType(field.typeName);
+            const TypeInfo info = parseType(field.typeName, &enumTypeNames);
             if (info.kind == TypeInfo::Kind::Primitive)
             {
                 out << "        LDdsFramework::idl_detail::writePod(buffer, " << field.name << ");\n";
+            }
+            else if (info.kind == TypeInfo::Kind::Enum)
+            {
+                out << "        LDdsFramework::idl_detail::writeEnum(buffer, " << field.name << ");\n";
             }
             else if (info.kind == TypeInfo::Kind::String)
             {
@@ -471,6 +568,10 @@ std::string generateDefineHeader(
                 if (info.elementKind == TypeInfo::Kind::Primitive)
                 {
                     out << "            LDdsFramework::idl_detail::writePod(buffer, item);\n";
+                }
+                else if (info.elementKind == TypeInfo::Kind::Enum)
+                {
+                    out << "            LDdsFramework::idl_detail::writeEnum(buffer, item);\n";
                 }
                 else if (info.elementKind == TypeInfo::Kind::String)
                 {
@@ -498,10 +599,14 @@ std::string generateDefineHeader(
 
         for (const auto & field : st.fields)
         {
-            const TypeInfo info = parseType(field.typeName);
+            const TypeInfo info = parseType(field.typeName, &enumTypeNames);
             if (info.kind == TypeInfo::Kind::Primitive)
             {
                 out << "        if (!LDdsFramework::idl_detail::readPod(data, offset, " << field.name << ")) { return false; }\n";
+            }
+            else if (info.kind == TypeInfo::Kind::Enum)
+            {
+                out << "        if (!LDdsFramework::idl_detail::readEnum(data, offset, " << field.name << ")) { return false; }\n";
             }
             else if (info.kind == TypeInfo::Kind::String)
             {
@@ -519,6 +624,10 @@ std::string generateDefineHeader(
                 if (info.elementKind == TypeInfo::Kind::Primitive)
                 {
                     out << "            if (!LDdsFramework::idl_detail::readPod(data, offset, item)) { return false; }\n";
+                }
+                else if (info.elementKind == TypeInfo::Kind::Enum)
+                {
+                    out << "            if (!LDdsFramework::idl_detail::readEnum(data, offset, item)) { return false; }\n";
                 }
                 else if (info.elementKind == TypeInfo::Kind::String)
                 {
@@ -557,6 +666,200 @@ std::string generateDefineHeader(
         out << "    static uint32_t getTypeId() noexcept { return " << topicId << "U; }\n";
         out << "    static const char * getTypeName() noexcept { return \"" << st.fullName << "\"; }\n";
 
+        out << "};\n";
+
+        closeNamespaces(out, nsParts);
+        out << "\n";
+    }
+
+    for (const auto & un : file.unions)
+    {
+        const auto nsParts = splitNs(un.packagePath);
+        openNamespaces(out, nsParts);
+        if (!un.comment.empty())
+        {
+            out << "// " << un.comment << "\n";
+        }
+
+        const TypeInfo discriminatorInfo = parseType(un.discriminatorType, &enumTypeNames);
+
+        out << "struct " << un.name << "\n{\n";
+        out << "    " << discriminatorInfo.cppType << " discriminator{};\n";
+
+        for (const auto & uc : un.cases)
+        {
+            const TypeInfo fieldInfo = parseType(uc.field.typeName, &enumTypeNames);
+            out << "    " << fieldInfo.cppType << " " << uc.field.name << "{};\n";
+        }
+        out << "\n";
+
+        out << "    void serialize(LDdsFramework::LByteBuffer & buffer) const\n";
+        out << "    {\n";
+        if (discriminatorInfo.kind == TypeInfo::Kind::Enum)
+        {
+            out << "        LDdsFramework::idl_detail::writeEnum(buffer, discriminator);\n";
+        }
+        else
+        {
+            out << "        LDdsFramework::idl_detail::writePod(buffer, discriminator);\n";
+        }
+
+        out << "        switch (static_cast<int64_t>(discriminator))\n";
+        out << "        {\n";
+        for (const auto & uc : un.cases)
+        {
+            if (uc.isDefault)
+            {
+                out << "        default:\n";
+            }
+            else
+            {
+                for (const int64_t label : uc.labels)
+                {
+                    out << "        case " << label << ":\n";
+                }
+            }
+
+            const TypeInfo fieldInfo = parseType(uc.field.typeName, &enumTypeNames);
+            if (fieldInfo.kind == TypeInfo::Kind::Primitive)
+            {
+                out << "            LDdsFramework::idl_detail::writePod(buffer, " << uc.field.name << ");\n";
+            }
+            else if (fieldInfo.kind == TypeInfo::Kind::Enum)
+            {
+                out << "            LDdsFramework::idl_detail::writeEnum(buffer, " << uc.field.name << ");\n";
+            }
+            else if (fieldInfo.kind == TypeInfo::Kind::String)
+            {
+                out << "            LDdsFramework::idl_detail::writeString(buffer, " << uc.field.name << ");\n";
+            }
+            else if (fieldInfo.kind == TypeInfo::Kind::Vector)
+            {
+                out << "            buffer.writeUInt32(static_cast<uint32_t>(" << uc.field.name << ".size()));\n";
+                out << "            for (const auto & item : " << uc.field.name << ")\n";
+                out << "            {\n";
+                if (fieldInfo.elementKind == TypeInfo::Kind::Primitive)
+                {
+                    out << "                LDdsFramework::idl_detail::writePod(buffer, item);\n";
+                }
+                else if (fieldInfo.elementKind == TypeInfo::Kind::Enum)
+                {
+                    out << "                LDdsFramework::idl_detail::writeEnum(buffer, item);\n";
+                }
+                else if (fieldInfo.elementKind == TypeInfo::Kind::String)
+                {
+                    out << "                LDdsFramework::idl_detail::writeString(buffer, item);\n";
+                }
+                else
+                {
+                    out << "                item.serialize(buffer);\n";
+                }
+                out << "            }\n";
+            }
+            else
+            {
+                out << "            " << uc.field.name << ".serialize(buffer);\n";
+            }
+            out << "            break;\n";
+        }
+        out << "        }\n";
+        out << "    }\n\n";
+
+        out << "    bool deserialize(const std::vector<uint8_t> & data, size_t & offset)\n";
+        out << "    {\n";
+        if (discriminatorInfo.kind == TypeInfo::Kind::Enum)
+        {
+            out << "        if (!LDdsFramework::idl_detail::readEnum(data, offset, discriminator)) { return false; }\n";
+        }
+        else
+        {
+            out << "        if (!LDdsFramework::idl_detail::readPod(data, offset, discriminator)) { return false; }\n";
+        }
+
+        out << "        switch (static_cast<int64_t>(discriminator))\n";
+        out << "        {\n";
+        for (const auto & uc : un.cases)
+        {
+            if (uc.isDefault)
+            {
+                out << "        default:\n";
+            }
+            else
+            {
+                for (const int64_t label : uc.labels)
+                {
+                    out << "        case " << label << ":\n";
+                }
+            }
+
+            const TypeInfo fieldInfo = parseType(uc.field.typeName, &enumTypeNames);
+            if (fieldInfo.kind == TypeInfo::Kind::Primitive)
+            {
+                out << "            if (!LDdsFramework::idl_detail::readPod(data, offset, " << uc.field.name << ")) { return false; }\n";
+            }
+            else if (fieldInfo.kind == TypeInfo::Kind::Enum)
+            {
+                out << "            if (!LDdsFramework::idl_detail::readEnum(data, offset, " << uc.field.name << ")) { return false; }\n";
+            }
+            else if (fieldInfo.kind == TypeInfo::Kind::String)
+            {
+                out << "            if (!LDdsFramework::idl_detail::readString(data, offset, " << uc.field.name << ")) { return false; }\n";
+            }
+            else if (fieldInfo.kind == TypeInfo::Kind::Vector)
+            {
+                out << "            uint32_t " << uc.field.name << "Size = 0;\n";
+                out << "            if (!LDdsFramework::idl_detail::readPod(data, offset, " << uc.field.name << "Size)) { return false; }\n";
+                out << "            " << uc.field.name << ".clear();\n";
+                out << "            " << uc.field.name << ".reserve(" << uc.field.name << "Size);\n";
+                out << "            for (uint32_t i = 0; i < " << uc.field.name << "Size; ++i)\n";
+                out << "            {\n";
+                out << "                " << fieldInfo.elementCppType << " item{};\n";
+                if (fieldInfo.elementKind == TypeInfo::Kind::Primitive)
+                {
+                    out << "                if (!LDdsFramework::idl_detail::readPod(data, offset, item)) { return false; }\n";
+                }
+                else if (fieldInfo.elementKind == TypeInfo::Kind::Enum)
+                {
+                    out << "                if (!LDdsFramework::idl_detail::readEnum(data, offset, item)) { return false; }\n";
+                }
+                else if (fieldInfo.elementKind == TypeInfo::Kind::String)
+                {
+                    out << "                if (!LDdsFramework::idl_detail::readString(data, offset, item)) { return false; }\n";
+                }
+                else
+                {
+                    out << "                if (!item.deserialize(data, offset)) { return false; }\n";
+                }
+                out << "                " << uc.field.name << ".push_back(std::move(item));\n";
+                out << "            }\n";
+            }
+            else
+            {
+                out << "            if (!" << uc.field.name << ".deserialize(data, offset)) { return false; }\n";
+            }
+            out << "            break;\n";
+        }
+        out << "        }\n";
+        out << "        return true;\n";
+        out << "    }\n\n";
+
+        out << "    bool deserialize(const std::vector<uint8_t> & data)\n";
+        out << "    {\n";
+        out << "        size_t offset = 0;\n";
+        out << "        return deserialize(data, offset) && offset == data.size();\n";
+        out << "    }\n\n";
+
+        out << "    std::vector<uint8_t> serialize() const\n";
+        out << "    {\n";
+        out << "        LDdsFramework::LByteBuffer buffer;\n";
+        out << "        serialize(buffer);\n";
+        out << "        return std::vector<uint8_t>(buffer.data(), buffer.data() + buffer.size());\n";
+        out << "    }\n\n";
+
+        const auto topicIt = topicByType.find(un.fullName);
+        const uint32_t topicId = (topicIt == topicByType.end()) ? 0U : topicIt->second;
+        out << "    static uint32_t getTypeId() noexcept { return " << topicId << "U; }\n";
+        out << "    static const char * getTypeName() noexcept { return \"" << un.fullName << "\"; }\n";
         out << "};\n";
 
         closeNamespaces(out, nsParts);
@@ -653,8 +956,261 @@ std::string generateTopicCpp(const std::string & prefix, const LIdlFile & file)
         out << "    );\n";
     }
 
+    for (const auto & un : file.unions)
+    {
+        const auto it = topicByType.find(un.fullName);
+        if (it == topicByType.end())
+        {
+            continue;
+        }
+
+        const auto * topic = it->second;
+        out << "    registry.registerType<" << un.fullName << ">(\n";
+        out << "        \"" << un.fullName << "\",\n";
+        out << "        static_cast<uint32_t>(" << enumName << "::" << topic->name << "),\n";
+        out << "        [](const " << un.fullName << " & object, std::vector<uint8_t> & outPayload) -> bool {\n";
+        out << "            outPayload = object.serialize();\n";
+        out << "            return true;\n";
+        out << "        },\n";
+        out << "        [](const std::vector<uint8_t> & payload, " << un.fullName << " & object) -> bool {\n";
+        out << "            return object.deserialize(payload);\n";
+        out << "        }\n";
+        out << "    );\n";
+    }
+
     out << "}\n";
     out << "} // namespace LDdsFramework\n";
+    return out.str();
+}
+
+std::string pythonTypeFromRaw(
+    const std::string & rawType,
+    const std::unordered_set<std::string> & enumTypeNames)
+{
+    const TypeInfo info = parseType(rawType, &enumTypeNames);
+    if (info.kind == TypeInfo::Kind::String)
+    {
+        return "str";
+    }
+    if (info.kind == TypeInfo::Kind::Enum)
+    {
+        return info.cppType;
+    }
+    if (info.kind == TypeInfo::Kind::Vector)
+    {
+        const std::string elemType = pythonTypeFromRaw(info.elementType, enumTypeNames);
+        return "List[" + elemType + "]";
+    }
+    if (info.kind == TypeInfo::Kind::Primitive)
+    {
+        const std::string lower = toLower(trim(rawType));
+        if (lower == "bool")
+        {
+            return "bool";
+        }
+        if (lower == "float" || lower == "double")
+        {
+            return "float";
+        }
+        return "int";
+    }
+    return info.cppType;
+}
+
+std::string pythonDefaultForType(
+    const std::string & rawType,
+    const std::unordered_set<std::string> & enumTypeNames)
+{
+    const TypeInfo info = parseType(rawType, &enumTypeNames);
+    if (info.kind == TypeInfo::Kind::String)
+    {
+        return "\"\"";
+    }
+    if (info.kind == TypeInfo::Kind::Vector)
+    {
+        return "dataclass_field(default_factory=list)";
+    }
+    if (info.kind == TypeInfo::Kind::Primitive)
+    {
+        const std::string lower = toLower(trim(rawType));
+        if (lower == "bool")
+        {
+            return "False";
+        }
+        if (lower == "float" || lower == "double")
+        {
+            return "0.0";
+        }
+        return "0";
+    }
+    if (info.kind == TypeInfo::Kind::Enum)
+    {
+        return "0";
+    }
+    return "dataclass_field(default_factory=" + info.cppType + ")";
+}
+
+std::string generatePythonModule(const std::string & prefix, const LIdlFile & file)
+{
+    std::unordered_set<std::string> enumTypeNames;
+    for (const auto & en : file.enums)
+    {
+        enumTypeNames.insert(en.fullName);
+        enumTypeNames.insert(en.name);
+    }
+
+    std::ostringstream out;
+    out << "from __future__ import annotations\n";
+    out << "from dataclasses import dataclass, field as dataclass_field\n";
+    out << "from enum import IntEnum\n";
+    out << "from typing import Any, Dict, List, get_args, get_origin\n";
+    out << "import inspect\n";
+    out << "import json\n\n";
+
+    out << "def _encode_value(value: Any) -> Any:\n";
+    out << "    if isinstance(value, IntEnum):\n";
+    out << "        return int(value)\n";
+    out << "    if hasattr(value, \"to_dict\"):\n";
+    out << "        return value.to_dict()\n";
+    out << "    if isinstance(value, list):\n";
+    out << "        return [_encode_value(v) for v in value]\n";
+    out << "    return value\n\n";
+
+    out << "def _decode_value(value: Any, typ: Any) -> Any:\n";
+    out << "    origin = get_origin(typ)\n";
+    out << "    if origin in (list, List):\n";
+    out << "        elem = get_args(typ)[0] if get_args(typ) else Any\n";
+    out << "        if value is None:\n";
+    out << "            return []\n";
+    out << "        return [_decode_value(v, elem) for v in value]\n";
+    out << "    if inspect.isclass(typ) and issubclass(typ, IntEnum):\n";
+    out << "        return typ(value)\n";
+    out << "    if inspect.isclass(typ) and hasattr(typ, \"from_dict\"):\n";
+    out << "        if isinstance(value, dict):\n";
+    out << "            return typ.from_dict(value)\n";
+    out << "        return typ()\n";
+    out << "    return value\n\n";
+
+    for (const auto & en : file.enums)
+    {
+        out << "class " << en.name << "(IntEnum):\n";
+        if (en.values.empty())
+        {
+            out << "    Invalid = 0\n";
+        }
+        else
+        {
+            for (const auto & item : en.values)
+            {
+                out << "    " << item.name << " = " << item.value << "\n";
+            }
+        }
+        out << "\n";
+    }
+
+    for (const auto & st : file.structs)
+    {
+        out << "@dataclass\n";
+        out << "class " << st.name << ":\n";
+        if (st.fields.empty())
+        {
+            out << "    _placeholder: int = 0\n";
+        }
+        else
+        {
+            for (const auto & field : st.fields)
+            {
+                const std::string pyType = pythonTypeFromRaw(field.typeName, enumTypeNames);
+                const std::string pyDefault = pythonDefaultForType(field.typeName, enumTypeNames);
+                out << "    " << field.name << ": " << pyType << " = " << pyDefault << "\n";
+            }
+        }
+        out << "\n";
+        out << "    def to_dict(self) -> Dict[str, Any]:\n";
+        out << "        return {\n";
+        for (const auto & field : st.fields)
+        {
+            out << "            \"" << field.name << "\": _encode_value(self." << field.name << "),\n";
+        }
+        out << "        }\n\n";
+        out << "    @classmethod\n";
+        out << "    def from_dict(cls, data: Dict[str, Any]) -> \"" << st.name << "\":\n";
+        out << "        kwargs: Dict[str, Any] = {}\n";
+        out << "        hints = cls.__annotations__\n";
+        for (const auto & field : st.fields)
+        {
+            out << "        kwargs[\"" << field.name << "\"] = _decode_value(data.get(\"" << field.name
+                << "\"), hints[\"" << field.name << "\"])\n";
+        }
+        out << "        return cls(**kwargs)\n\n";
+        out << "    def serialize(self) -> bytes:\n";
+        out << "        return json.dumps(self.to_dict(), separators=(\",\", \":\")).encode(\"utf-8\")\n\n";
+        out << "    @classmethod\n";
+        out << "    def deserialize(cls, payload: bytes) -> \"" << st.name << "\":\n";
+        out << "        return cls.from_dict(json.loads(payload.decode(\"utf-8\")))\n\n";
+    }
+
+    for (const auto & un : file.unions)
+    {
+        out << "@dataclass\n";
+        out << "class " << un.name << ":\n";
+        out << "    discriminator: " << pythonTypeFromRaw(un.discriminatorType, enumTypeNames) << " = 0\n";
+        if (un.cases.empty())
+        {
+            out << "    _placeholder: int = 0\n";
+        }
+        else
+        {
+            for (const auto & uc : un.cases)
+            {
+                out << "    " << uc.field.name << ": "
+                    << pythonTypeFromRaw(uc.field.typeName, enumTypeNames)
+                    << " = " << pythonDefaultForType(uc.field.typeName, enumTypeNames) << "\n";
+            }
+        }
+        out << "\n";
+        out << "    def to_dict(self) -> Dict[str, Any]:\n";
+        out << "        return {\n";
+        out << "            \"discriminator\": _encode_value(self.discriminator),\n";
+        for (const auto & uc : un.cases)
+        {
+            out << "            \"" << uc.field.name << "\": _encode_value(self." << uc.field.name << "),\n";
+        }
+        out << "        }\n\n";
+        out << "    @classmethod\n";
+        out << "    def from_dict(cls, data: Dict[str, Any]) -> \"" << un.name << "\":\n";
+        out << "        kwargs: Dict[str, Any] = {}\n";
+        out << "        hints = cls.__annotations__\n";
+        out << "        kwargs[\"discriminator\"] = _decode_value(data.get(\"discriminator\"), hints[\"discriminator\"])\n";
+        for (const auto & uc : un.cases)
+        {
+            out << "        kwargs[\"" << uc.field.name << "\"] = _decode_value(data.get(\"" << uc.field.name
+                << "\"), hints[\"" << uc.field.name << "\"])\n";
+        }
+        out << "        return cls(**kwargs)\n\n";
+        out << "    def serialize(self) -> bytes:\n";
+        out << "        return json.dumps(self.to_dict(), separators=(\",\", \":\")).encode(\"utf-8\")\n\n";
+        out << "    @classmethod\n";
+        out << "    def deserialize(cls, payload: bytes) -> \"" << un.name << "\":\n";
+        out << "        return cls.from_dict(json.loads(payload.decode(\"utf-8\")))\n\n";
+    }
+
+    out << "TOPICS: Dict[str, int] = {\n";
+    for (const auto & topic : file.topics)
+    {
+        out << "    \"" << topic.name << "\": " << topic.id << ",\n";
+    }
+    out << "}\n";
+    for (const auto & topic : file.topics)
+    {
+        out << topic.name << " = TOPICS[\"" << topic.name << "\"]\n";
+    }
+    out << "TYPE_TO_TOPIC: Dict[str, int] = {\n";
+    for (const auto & topic : file.topics)
+    {
+        out << "    \"" << topic.typeName << "\": TOPICS[\"" << topic.name << "\"],\n";
+    }
+    out << "}\n";
     return out.str();
 }
 
@@ -794,12 +1350,6 @@ GenerationResult LIdlGenerator::generateFromAst(
     GenerationResult result;
     const auto start = std::chrono::steady_clock::now();
 
-    if (m_target != TargetLanguage::Cpp)
-    {
-        result.messages.push_back("only C++ generation is implemented");
-        return result;
-    }
-
     const auto idlFile = std::dynamic_pointer_cast<LIdlFile>(astRoot);
     if (!idlFile)
     {
@@ -817,37 +1367,64 @@ GenerationResult LIdlGenerator::generateFromAst(
         return result;
     }
 
-    const std::string exportText = generateExportHeader(prefix);
-    const std::string defineText = generateDefineHeader(prefix, *idlFile);
-    const std::string topicHText = generateTopicHeader(prefix, *idlFile);
-    const std::string topicCppText = generateTopicCpp(prefix, *idlFile);
-
-    const fs::path exportPath = outputDir / (prefix + "_export.h");
-    const fs::path definePath = outputDir / (prefix + "_define.h");
-    const fs::path topicHPath = outputDir / (prefix + "_topic.h");
-    const fs::path topicCppPath = outputDir / (prefix + "_topic.cpp");
-
-    if (!writeTextFile(exportPath, exportText) ||
-        !writeTextFile(definePath, defineText) ||
-        !writeTextFile(topicHPath, topicHText) ||
-        !writeTextFile(topicCppPath, topicCppText))
+    if (m_target == TargetLanguage::Cpp)
     {
-        result.messages.push_back("failed to write generated files");
-        return result;
+        const std::string exportText = generateExportHeader(prefix);
+        const std::string defineText = generateDefineHeader(prefix, *idlFile);
+        const std::string topicHText = generateTopicHeader(prefix, *idlFile);
+        const std::string topicCppText = generateTopicCpp(prefix, *idlFile);
+
+        const fs::path exportPath = outputDir / (prefix + "_export.h");
+        const fs::path definePath = outputDir / (prefix + "_define.h");
+        const fs::path topicHPath = outputDir / (prefix + "_topic.h");
+        const fs::path topicCppPath = outputDir / (prefix + "_topic.cpp");
+
+        if (!writeTextFile(exportPath, exportText) ||
+            !writeTextFile(definePath, defineText) ||
+            !writeTextFile(topicHPath, topicHText) ||
+            !writeTextFile(topicCppPath, topicCppText))
+        {
+            result.messages.push_back("failed to write generated files");
+            return result;
+        }
+
+        result.success = true;
+        result.outputPath = outputDir.string();
+        result.generatedCode = defineText;
+        result.linesGenerated = countLines(exportText) + countLines(defineText) +
+                                countLines(topicHText) + countLines(topicCppText);
+
+        if (m_callback)
+        {
+            m_callback((outputDir / (prefix + "_define.h")).string(), 1, 4, "generated");
+            m_callback((outputDir / (prefix + "_export.h")).string(), 2, 4, "generated");
+            m_callback((outputDir / (prefix + "_topic.h")).string(), 3, 4, "generated");
+            m_callback((outputDir / (prefix + "_topic.cpp")).string(), 4, 4, "generated");
+        }
     }
-
-    result.success = true;
-    result.outputPath = outputDir.string();
-    result.generatedCode = defineText;
-    result.linesGenerated = countLines(exportText) + countLines(defineText) +
-                            countLines(topicHText) + countLines(topicCppText);
-
-    if (m_callback)
+    else if (m_target == TargetLanguage::Python)
     {
-        m_callback((outputDir / (prefix + "_define.h")).string(), 1, 4, "generated");
-        m_callback((outputDir / (prefix + "_export.h")).string(), 2, 4, "generated");
-        m_callback((outputDir / (prefix + "_topic.h")).string(), 3, 4, "generated");
-        m_callback((outputDir / (prefix + "_topic.cpp")).string(), 4, 4, "generated");
+        const std::string pythonText = generatePythonModule(prefix, *idlFile);
+        const fs::path pythonPath = outputDir / (prefix + "_types.py");
+        if (!writeTextFile(pythonPath, pythonText))
+        {
+            result.messages.push_back("failed to write generated python file");
+            return result;
+        }
+
+        result.success = true;
+        result.outputPath = pythonPath.string();
+        result.generatedCode = pythonText;
+        result.linesGenerated = countLines(pythonText);
+        if (m_callback)
+        {
+            m_callback(pythonPath.string(), 1, 1, "generated");
+        }
+    }
+    else
+    {
+        result.messages.push_back("target language is declared but not implemented yet");
+        return result;
     }
 
     const auto end = std::chrono::steady_clock::now();
@@ -881,7 +1458,7 @@ std::vector<std::string> LIdlGenerator::getFileExtensions() const
     case TargetLanguage::Java:
         return {".java"};
     case TargetLanguage::Python:
-        return {".py"};
+        return {"_types.py"};
     case TargetLanguage::Go:
         return {".go"};
     case TargetLanguage::Rust:
