@@ -44,11 +44,11 @@ public:
     LDds & operator=(const LDds & other) = delete;
 
     bool initialize(const LQos & qos);
-    bool initialize(const LQos & qos, const TransportConfig & transportConfig, DomainId domainId = DEFAULT_DOMAIN_ID);
+    bool initialize(const LQos & qos, const TransportConfig & transportConfig, DomainId domainId = INVALID_DOMAIN_ID);
     bool initializeFromQosXml(
         const std::string & qosXmlPath,
         const TransportConfig & transportConfig = TransportConfig(),
-        DomainId domainId = DEFAULT_DOMAIN_ID
+        DomainId domainId = INVALID_DOMAIN_ID
     );
     void shutdown() noexcept;
 
@@ -170,6 +170,7 @@ private:
 private:
     LQos                        m_qos;
     LDomain                     m_domain;
+    DomainId                    m_effectiveDomainId;
     std::unique_ptr<ITransport> m_pTransport;
     std::shared_ptr<LTypeRegistry> m_pTypeRegistry;
 

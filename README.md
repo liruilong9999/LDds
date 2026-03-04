@@ -204,3 +204,57 @@ powershell -ExecutionPolicy Bypass -File .\build\stage8_stress\run_stage8.ps1 -P
 3. 安全能力（鉴权、加密、访问控制）
 4. 观测与运维（指标、链路追踪、告警、动态配置热更新）
 5. 完整互操作与兼容性测试矩阵（多平台、多版本、异常网络场景）
+
+## Phase 0 基线治理补充
+
+### 统一测试入口（stage3/4/7/56/8）
+可使用统一脚本串行运行全部阶段测试，并输出统一格式：`PASS/FAIL + stage name + duration`。
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_all_stage_tests.ps1
+```
+
+可选参数：
+1. `-Config Debug|Release|RelWithDebInfo|MinSizeRel`（默认 `Debug`）
+2. `-SkipStage8`（跳过 stage8 压测）
+
+脚本日志目录：`build/stage_runs`。
+
+### QoS 示例配置
+新增示例文件：`qos.example.xml`。
+
+推荐流程：
+1. 从示例复制一份作为本地配置。
+2. 按环境修改 `transport/historyDepth/deadlineMs/reliable`。
+3. 通过 `loadFromXmlFile` 直接加载。
+
+```powershell
+Copy-Item .\qos.example.xml .\qos.local.xml
+```
+
+说明：仓库中的 `qos.xml` 保持现有行为不变，`qos.example.xml` 仅作为开发配置模板。
+
+### 统一日志前缀约定
+阶段测试关键输出统一为带前缀格式，便于脚本和 CI 正则抓取：
+1. `stage3`：`[stage3] ...`
+2. `stage4`：`[stage4] ...`
+3. `stage7`：`[stage7] ...`
+4. `stage56`：`[stage56] ...`
+5. `stage8`：`[stage8][SENDER] ...` / `...[RECEIVER] ...`
+## Phase 1 Domain 验证入口
+
+1. 运行 Domain 阶段冒烟：
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_stage1_domain_smoke.ps1
+```
+2. 成功标志：`[stage1_domain] domain_stage=ok`
+3. 规则文档：`docs/phase1_domain_rules.md`
+
+## 统一测试脚本新增参数
+
+`run_all_stage_tests.ps1` 新增：
+1. `-SkipBuild`：跳过 stage 可执行程序重编译
+2. `-StopOnCrash`：遇到崩溃退出码（负值）时立即停止
+
+默认行为为“先重编译再执行”，用于避免 DLL/EXE ABI 不一致导致的崩溃。
+4. 若环境存在应用控制策略导致 `stage8_stress.exe` 无法启动，可先使用 `-SkipStage8` 完成其余阶段回归。

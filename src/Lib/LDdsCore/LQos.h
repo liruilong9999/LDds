@@ -282,6 +282,10 @@ public:
      * @brief 传输类型选择（UDP/TCP）。
      */
     TransportType transportType;
+    uint8_t domainId;
+    bool enableDomainPortMapping;
+    uint16_t basePort;
+    uint16_t domainPortOffset;
 
     /**
      * @brief 从 XML 文件加载 QoS（优先配置方式）。

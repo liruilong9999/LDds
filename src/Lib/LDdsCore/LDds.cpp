@@ -38,11 +38,61 @@ std::chrono::milliseconds resolveHeartbeatInterval(int32_t deadlineMs)
     return std::chrono::milliseconds(candidate > 0 ? candidate : 200);
 }
 
+DomainId resolveEffectiveDomainId(const LQos & qos, DomainId requestedDomainId)
+{
+    if (requestedDomainId != INVALID_DOMAIN_ID)
+    {
+        return requestedDomainId;
+    }
+    return static_cast<DomainId>(qos.domainId);
+}
+
+bool applyDomainPortMapping(
+    TransportConfig & config,
+    DomainId          domainId,
+    std::string &     errorMessage)
+{
+    if (!config.enableDomainPortMapping)
+    {
+        return true;
+    }
+
+    if (config.basePort == 0)
+    {
+        errorMessage = "basePort must be > 0 when enableDomainPortMapping=true";
+        return false;
+    }
+    if (config.domainPortOffset == 0)
+    {
+        errorMessage = "domainPortOffset must be > 0 when enableDomainPortMapping=true";
+        return false;
+    }
+
+    const uint32_t mappedPort =
+        static_cast<uint32_t>(config.basePort) +
+        (static_cast<uint32_t>(domainId) * static_cast<uint32_t>(config.domainPortOffset));
+    if (mappedPort > 65535U)
+    {
+        errorMessage = "mapped port exceeds 65535";
+        return false;
+    }
+
+    config.bindPort = static_cast<quint16>(mappedPort);
+    if (!config.remoteAddress.isEmpty() || config.remotePort != 0)
+    {
+        config.remotePort = static_cast<quint16>(mappedPort);
+    }
+
+    errorMessage.clear();
+    return true;
+}
+
 } // namespace
 
 LDds::LDds()
     : m_qos()
     , m_domain()
+    , m_effectiveDomainId(DEFAULT_DOMAIN_ID)
     , m_pTransport()
     , m_pTypeRegistry(std::make_shared<LTypeRegistry>())
     , m_running(false)
@@ -73,7 +123,7 @@ LDds::~LDds()
 bool LDds::initialize(const LQos & qos)
 {
     TransportConfig config;
-    return initialize(qos, config, DEFAULT_DOMAIN_ID);
+    return initialize(qos, config, INVALID_DOMAIN_ID);
 }
 
 bool LDds::initialize(const LQos & qos, const TransportConfig & transportConfig, DomainId domainId)
@@ -84,6 +134,14 @@ bool LDds::initialize(const LQos & qos, const TransportConfig & transportConfig,
     }
 
     LQos effectiveQos = qos;
+    const DomainId effectiveDomainId = resolveEffectiveDomainId(qos, domainId);
+    if (effectiveDomainId > 255U)
+    {
+        setLastError("invalid domainId=" + std::to_string(effectiveDomainId) + ", must be in [0,255]");
+        return false;
+    }
+
+    effectiveQos.domainId = static_cast<uint8_t>(effectiveDomainId);
     effectiveQos.historyDepth = (effectiveQos.historyDepth <= 0) ? 1 : effectiveQos.historyDepth;
     effectiveQos.deadlineMs = std::max(0, effectiveQos.deadlineMs);
 
@@ -113,23 +171,42 @@ bool LDds::initialize(const LQos & qos, const TransportConfig & transportConfig,
     std::string validateError;
     if (!effectiveQos.validate(validateError))
     {
-        setLastError("invalid qos: " + validateError);
+        setLastError(
+            "invalid qos (domain=" + std::to_string(effectiveDomainId) + "): " + validateError);
         return false;
     }
 
-    if (!m_domain.isValid() || m_domain.getDomainId() != domainId)
+    TransportConfig effectiveTransportConfig = transportConfig;
+    if (!effectiveTransportConfig.enableDomainPortMapping && effectiveQos.enableDomainPortMapping)
+    {
+        effectiveTransportConfig.enableDomainPortMapping = true;
+        effectiveTransportConfig.basePort = effectiveQos.basePort;
+        effectiveTransportConfig.domainPortOffset = effectiveQos.domainPortOffset;
+    }
+
+    std::string mappingError;
+    if (!applyDomainPortMapping(effectiveTransportConfig, effectiveDomainId, mappingError))
+    {
+        setLastError(
+            "invalid transport config (domain=" + std::to_string(effectiveDomainId) + "): " +
+            mappingError);
+        return false;
+    }
+
+    if (!m_domain.isValid() || m_domain.getDomainId() != effectiveDomainId)
     {
         m_domain.destroy();
-        if (!m_domain.create(domainId, &effectiveQos))
+        if (!m_domain.create(effectiveDomainId, &effectiveQos))
         {
-            setLastError("failed to create domain");
+            setLastError("failed to create domain=" + std::to_string(effectiveDomainId));
             return false;
         }
     }
 
     m_qos = effectiveQos;
+    m_effectiveDomainId = effectiveDomainId;
 
-    if (!createTransportFromQos(effectiveQos, transportConfig))
+    if (!createTransportFromQos(effectiveQos, effectiveTransportConfig))
     {
         return false;
     }
@@ -142,7 +219,9 @@ bool LDds::initialize(const LQos & qos, const TransportConfig & transportConfig,
 
     if (!m_pTransport->start())
     {
-        setLastError("failed to start transport: " + m_pTransport->getLastError().toStdString());
+        setLastError(
+            "failed to start transport (domain=" + std::to_string(m_effectiveDomainId) + "): " +
+            m_pTransport->getLastError().toStdString());
         m_pTransport.reset();
         return false;
     }
@@ -200,6 +279,7 @@ void LDds::shutdown() noexcept
     }
 
     m_domain.destroy();
+    m_effectiveDomainId = DEFAULT_DOMAIN_ID;
     m_sequence.store(0);
 }
 
@@ -360,10 +440,13 @@ bool LDds::publishSerializedTopic(
 
     const uint64_t sequence = m_sequence.fetch_add(1) + 1;
     LMessage       message(topic, sequence, payload);
+    message.setDomainId(static_cast<uint8_t>(m_effectiveDomainId));
 
     if (!m_pTransport->sendMessage(message))
     {
-        setLastError("sendMessage failed: " + m_pTransport->getLastError().toStdString());
+        setLastError(
+            "sendMessage failed (domain=" + std::to_string(m_effectiveDomainId) + "): " +
+            m_pTransport->getLastError().toStdString());
         return false;
     }
 
@@ -384,8 +467,17 @@ void LDds::handleTransportMessage(
 
     if (message.isHeartbeat())
     {
+        if (message.getDomainId() != static_cast<uint8_t>(m_effectiveDomainId))
+        {
+            return;
+        }
         std::lock_guard<std::mutex> lock(m_qosMutex);
         m_lastHeartbeatReceive = std::chrono::steady_clock::now();
+        return;
+    }
+
+    if (message.getDomainId() != static_cast<uint8_t>(m_effectiveDomainId))
+    {
         return;
     }
 
@@ -511,6 +603,7 @@ void LDds::qosThreadFunc()
                 std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count()
             );
             LMessage heartbeat = LMessage::makeHeartbeat(sequence, nowMs);
+            heartbeat.setDomainId(static_cast<uint8_t>(m_effectiveDomainId));
             (void)m_pTransport->sendMessage(heartbeat);
         }
 

@@ -1,82 +1,113 @@
-#include "LMessage.h"
+﻿#include "LMessage.h"
 
 #include <cstring>
 
 namespace LDdsFramework {
+namespace {
 
-void LMessageHeader::serialize(LByteBuffer& buffer) const
+uint32_t readLeUInt32(const uint8_t * data) noexcept
+{
+    return static_cast<uint32_t>(data[0]) |
+           (static_cast<uint32_t>(data[1]) << 8) |
+           (static_cast<uint32_t>(data[2]) << 16) |
+           (static_cast<uint32_t>(data[3]) << 24);
+}
+
+uint64_t readLeUInt64(const uint8_t * data) noexcept
+{
+    return static_cast<uint64_t>(data[0]) |
+           (static_cast<uint64_t>(data[1]) << 8) |
+           (static_cast<uint64_t>(data[2]) << 16) |
+           (static_cast<uint64_t>(data[3]) << 24) |
+           (static_cast<uint64_t>(data[4]) << 32) |
+           (static_cast<uint64_t>(data[5]) << 40) |
+           (static_cast<uint64_t>(data[6]) << 48) |
+           (static_cast<uint64_t>(data[7]) << 56);
+}
+
+} // namespace
+
+void LMessageHeader::serialize(LByteBuffer & buffer) const
 {
     buffer.writeUInt32(totalSize);
     buffer.writeUInt32(topic);
     buffer.writeUInt64(sequence);
     buffer.writeUInt32(payloadSize);
+    buffer.writeBytes(&protocolVersion, sizeof(protocolVersion));
+    buffer.writeBytes(&domainId, sizeof(domainId));
 }
 
-bool LMessageHeader::deserialize(const uint8_t* data, size_t size)
+bool LMessageHeader::deserialize(const uint8_t * data, size_t size)
 {
-    if (size < HEADER_SIZE) {
+    if (size < LEGACY_HEADER_SIZE)
+    {
         return false;
     }
 
-    // 小端序读取
-    totalSize = static_cast<uint32_t>(data[0]) |
-                (static_cast<uint32_t>(data[1]) << 8) |
-                (static_cast<uint32_t>(data[2]) << 16) |
-                (static_cast<uint32_t>(data[3]) << 24);
+    totalSize = readLeUInt32(data);
+    topic = readLeUInt32(data + 4);
+    sequence = readLeUInt64(data + 8);
+    payloadSize = readLeUInt32(data + 16);
+    protocolVersion = 0;
+    domainId = 0;
 
-    topic = static_cast<uint32_t>(data[4]) |
-            (static_cast<uint32_t>(data[5]) << 8) |
-            (static_cast<uint32_t>(data[6]) << 16) |
-            (static_cast<uint32_t>(data[7]) << 24);
+    if (totalSize != size)
+    {
+        return false;
+    }
 
-    sequence = static_cast<uint64_t>(data[8]) |
-               (static_cast<uint64_t>(data[9]) << 8) |
-               (static_cast<uint64_t>(data[10]) << 16) |
-               (static_cast<uint64_t>(data[11]) << 24) |
-               (static_cast<uint64_t>(data[12]) << 32) |
-               (static_cast<uint64_t>(data[13]) << 40) |
-               (static_cast<uint64_t>(data[14]) << 48) |
-               (static_cast<uint64_t>(data[15]) << 56);
+    if (LEGACY_HEADER_SIZE + payloadSize == size)
+    {
+        return true;
+    }
 
-    payloadSize = static_cast<uint32_t>(data[16]) |
-                  (static_cast<uint32_t>(data[17]) << 8) |
-                  (static_cast<uint32_t>(data[18]) << 16) |
-                  (static_cast<uint32_t>(data[19]) << 24);
+    if (size >= HEADER_SIZE && (HEADER_SIZE + payloadSize == size))
+    {
+        protocolVersion = data[20];
+        domainId = data[21];
+        return true;
+    }
 
-    return true;
+    return false;
 }
 
 LMessage::LMessage()
     : m_messageType(LMessageType::Data)
     , m_topic(0)
     , m_sequence(0)
+    , m_domainId(0)
     , m_senderPort(0)
 {
 }
 
-LMessage::LMessage(uint32_t topic, uint64_t sequence, const std::vector<uint8_t>& payload)
+LMessage::LMessage(uint32_t topic, uint64_t sequence, const std::vector<uint8_t> & payload)
     : m_messageType(topic == HEARTBEAT_TOPIC_ID ? LMessageType::Heartbeat : LMessageType::Data)
     , m_topic(topic)
     , m_sequence(sequence)
+    , m_domainId(0)
     , m_payload(payload)
     , m_senderPort(0)
 {
 }
 
 LMessage::LMessage(
-    uint32_t                    topic,
-    uint64_t                    sequence,
-    const std::vector<uint8_t>& payload,
-    LMessageType                messageType)
+    uint32_t topic,
+    uint64_t sequence,
+    const std::vector<uint8_t> & payload,
+    LMessageType messageType)
     : m_messageType(messageType)
     , m_topic(topic)
     , m_sequence(sequence)
+    , m_domainId(0)
     , m_payload(payload)
     , m_senderPort(0)
 {
-    if (m_messageType == LMessageType::Heartbeat) {
+    if (m_messageType == LMessageType::Heartbeat)
+    {
         m_topic = HEARTBEAT_TOPIC_ID;
-    } else if (m_topic == HEARTBEAT_TOPIC_ID) {
+    }
+    else if (m_topic == HEARTBEAT_TOPIC_ID)
+    {
         m_messageType = LMessageType::Heartbeat;
     }
 }
@@ -89,9 +120,12 @@ uint32_t LMessage::getTopic() const noexcept
 void LMessage::setTopic(uint32_t topic) noexcept
 {
     m_topic = topic;
-    if (topic == HEARTBEAT_TOPIC_ID) {
+    if (topic == HEARTBEAT_TOPIC_ID)
+    {
         m_messageType = LMessageType::Heartbeat;
-    } else if (m_messageType == LMessageType::Heartbeat) {
+    }
+    else if (m_messageType == LMessageType::Heartbeat)
+    {
         m_messageType = LMessageType::Data;
     }
 }
@@ -106,6 +140,16 @@ void LMessage::setSequence(uint64_t sequence) noexcept
     m_sequence = sequence;
 }
 
+uint8_t LMessage::getDomainId() const noexcept
+{
+    return m_domainId;
+}
+
+void LMessage::setDomainId(uint8_t domainId) noexcept
+{
+    m_domainId = domainId;
+}
+
 LMessageType LMessage::getMessageType() const noexcept
 {
     return m_messageType;
@@ -114,7 +158,8 @@ LMessageType LMessage::getMessageType() const noexcept
 void LMessage::setMessageType(LMessageType type) noexcept
 {
     m_messageType = type;
-    if (type == LMessageType::Heartbeat) {
+    if (type == LMessageType::Heartbeat)
+    {
         m_topic = HEARTBEAT_TOPIC_ID;
     }
 }
@@ -131,27 +176,30 @@ LMessage LMessage::makeHeartbeat(uint64_t sequence, uint64_t timestampMs)
     return LMessage(HEARTBEAT_TOPIC_ID, sequence, payload, LMessageType::Heartbeat);
 }
 
-const std::vector<uint8_t>& LMessage::getPayload() const noexcept
+const std::vector<uint8_t> & LMessage::getPayload() const noexcept
 {
     return m_payload;
 }
 
-std::vector<uint8_t>& LMessage::getPayload() noexcept
+std::vector<uint8_t> & LMessage::getPayload() noexcept
 {
     return m_payload;
 }
 
-void LMessage::setPayload(const std::vector<uint8_t>& payload)
+void LMessage::setPayload(const std::vector<uint8_t> & payload)
 {
     m_payload = payload;
 }
 
-void LMessage::setPayload(const void* data, size_t size)
+void LMessage::setPayload(const void * data, size_t size)
 {
-    if (data && size > 0) {
+    if (data && size > 0)
+    {
         m_payload.resize(size);
         std::memcpy(m_payload.data(), data, size);
-    } else {
+    }
+    else
+    {
         m_payload.clear();
     }
 }
@@ -170,59 +218,59 @@ LByteBuffer LMessage::serialize() const
 {
     LByteBuffer buffer;
 
-    // 写入头部
-    buffer.writeUInt32(static_cast<uint32_t>(getTotalSize()));
-    buffer.writeUInt32(m_topic);
-    buffer.writeUInt64(m_sequence);
-    buffer.writeUInt32(static_cast<uint32_t>(m_payload.size()));
+    LMessageHeader header;
+    header.totalSize = static_cast<uint32_t>(getTotalSize());
+    header.topic = m_topic;
+    header.sequence = m_sequence;
+    header.payloadSize = static_cast<uint32_t>(m_payload.size());
+    header.protocolVersion = LMessageHeader::CURRENT_PROTOCOL_VERSION;
+    header.domainId = m_domainId;
+    header.serialize(buffer);
 
-    // 写入payload
-    if (!m_payload.empty()) {
+    if (!m_payload.empty())
+    {
         buffer.writeBytes(m_payload.data(), m_payload.size());
     }
 
     return buffer;
 }
 
-bool LMessage::deserialize(const uint8_t* data, size_t size)
+bool LMessage::deserialize(const uint8_t * data, size_t size)
 {
-    if (size < LMessageHeader::HEADER_SIZE) {
+    if (size < LMessageHeader::LEGACY_HEADER_SIZE)
+    {
         return false;
     }
 
-    // 解析头部
     LMessageHeader header;
-    if (!header.deserialize(data, size)) {
+    if (!header.deserialize(data, size))
+    {
         return false;
     }
 
-    // 验证总大小
-    if (header.totalSize != size) {
-        return false;
-    }
-
-    // 验证payload大小
-    if (LMessageHeader::HEADER_SIZE + header.payloadSize != size) {
-        return false;
-    }
-
-    // 设置字段
     m_topic = header.topic;
     m_sequence = header.sequence;
+    m_domainId = header.domainId;
     m_messageType = (m_topic == HEARTBEAT_TOPIC_ID) ? LMessageType::Heartbeat : LMessageType::Data;
 
-    // 复制payload
-    if (header.payloadSize > 0) {
+    if (header.payloadSize > 0)
+    {
         m_payload.resize(header.payloadSize);
-        std::memcpy(m_payload.data(), data + LMessageHeader::HEADER_SIZE, header.payloadSize);
-    } else {
+        const size_t payloadOffset =
+            (size == (LMessageHeader::HEADER_SIZE + header.payloadSize))
+                ? LMessageHeader::HEADER_SIZE
+                : LMessageHeader::LEGACY_HEADER_SIZE;
+        std::memcpy(m_payload.data(), data + payloadOffset, header.payloadSize);
+    }
+    else
+    {
         m_payload.clear();
     }
 
     return true;
 }
 
-bool LMessage::deserialize(const LByteBuffer& buffer)
+bool LMessage::deserialize(const LByteBuffer & buffer)
 {
     return deserialize(buffer.data(), buffer.size());
 }
@@ -232,6 +280,7 @@ void LMessage::clear() noexcept
     m_messageType = LMessageType::Data;
     m_topic = 0;
     m_sequence = 0;
+    m_domainId = 0;
     m_payload.clear();
     m_senderAddress.clear();
     m_senderPort = 0;
@@ -242,7 +291,7 @@ QHostAddress LMessage::getSenderAddress() const noexcept
     return m_senderAddress;
 }
 
-void LMessage::setSenderAddress(const QHostAddress& address) noexcept
+void LMessage::setSenderAddress(const QHostAddress & address) noexcept
 {
     m_senderAddress = address;
 }
@@ -259,7 +308,7 @@ void LMessage::setSenderPort(quint16 port) noexcept
 
 bool LMessage::isValid() const noexcept
 {
-    return getTotalSize() >= LMessageHeader::HEADER_SIZE;
+    return getTotalSize() >= LMessageHeader::LEGACY_HEADER_SIZE;
 }
 
 } // namespace LDdsFramework

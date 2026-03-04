@@ -11,7 +11,6 @@
 #include <sstream>
 #include <string>
 
-#define PUGIXML_HEADER_ONLY
 #include "pugixml.hpp"
 
 namespace LDdsFramework {
@@ -153,6 +152,28 @@ bool tryReadIntAttr(
     return parseIntText(attr.as_string(), valueOut);
 }
 
+bool tryReadBool(const pugi::xml_node & root, const char * childName, bool & valueOut)
+{
+    const pugi::xml_node child = root.child(childName);
+    if (!child)
+    {
+        return false;
+    }
+    valueOut = parseBoolText(child.text().as_string(), valueOut);
+    return true;
+}
+
+bool tryReadBoolAttr(const pugi::xml_node & node, const char * attrName, bool & valueOut)
+{
+    const pugi::xml_attribute attr = node.attribute(attrName);
+    if (!attr)
+    {
+        return false;
+    }
+    valueOut = parseBoolText(attr.as_string(), valueOut);
+    return true;
+}
+
 } // namespace
 
 LQos::LQos() noexcept
@@ -160,6 +181,10 @@ LQos::LQos() noexcept
     , deadlineMs(0)
     , reliable(false)
     , transportType(TransportType::UDP)
+    , domainId(0)
+    , enableDomainPortMapping(false)
+    , basePort(20000)
+    , domainPortOffset(10)
     , m_reliability()
     , m_durability()
     , m_deadline()
@@ -196,6 +221,10 @@ void LQos::resetToDefaults() noexcept
     deadlineMs       = 0;
     reliable         = false;
     transportType    = TransportType::UDP;
+    domainId         = 0;
+    enableDomainPortMapping = false;
+    basePort         = 20000;
+    domainPortOffset = 10;
 }
 
 void LQos::setTransportType(TransportType type) noexcept
@@ -301,6 +330,35 @@ bool LQos::validate(std::string & errorMessage) const
         return false;
     }
 
+    if (static_cast<uint32_t>(domainId) > 255U)
+    {
+        errorMessage = "domainId must be in [0,255]";
+        return false;
+    }
+
+    if (enableDomainPortMapping)
+    {
+        if (basePort == 0)
+        {
+            errorMessage = "basePort must be > 0 when enableDomainPortMapping=true";
+            return false;
+        }
+        if (domainPortOffset == 0)
+        {
+            errorMessage = "domainPortOffset must be > 0 when enableDomainPortMapping=true";
+            return false;
+        }
+
+        const uint32_t mappedPort =
+            static_cast<uint32_t>(basePort) +
+            (static_cast<uint32_t>(domainId) * static_cast<uint32_t>(domainPortOffset));
+        if (mappedPort > 65535U)
+        {
+            errorMessage = "mapped port exceeds 65535";
+            return false;
+        }
+    }
+
     errorMessage.clear();
     return true;
 }
@@ -312,6 +370,44 @@ bool LQos::isCompatibleWith(const LQos & other, std::string & errorMessage) cons
         errorMessage = "transportType mismatch";
         return false;
     }
+
+    if (reliable != other.reliable)
+    {
+        errorMessage = "reliability mismatch";
+        return false;
+    }
+
+    if (historyDepth != other.historyDepth)
+    {
+        errorMessage = "historyDepth mismatch";
+        return false;
+    }
+
+    if (deadlineMs != other.deadlineMs)
+    {
+        errorMessage = "deadlineMs mismatch";
+        return false;
+    }
+
+    if (domainId != other.domainId)
+    {
+        errorMessage = "domainId mismatch";
+        return false;
+    }
+
+    if (enableDomainPortMapping != other.enableDomainPortMapping)
+    {
+        errorMessage = "enableDomainPortMapping mismatch";
+        return false;
+    }
+
+    if (enableDomainPortMapping &&
+        (basePort != other.basePort || domainPortOffset != other.domainPortOffset))
+    {
+        errorMessage = "domain port mapping parameters mismatch";
+        return false;
+    }
+
     errorMessage.clear();
     return true;
 }
@@ -330,6 +426,10 @@ void LQos::merge(const LQos & other)
     deadlineMs = other.deadlineMs;
     reliable = other.reliable;
     transportType = other.transportType;
+    domainId = other.domainId;
+    enableDomainPortMapping = other.enableDomainPortMapping;
+    basePort = other.basePort;
+    domainPortOffset = other.domainPortOffset;
 }
 
 bool LQos::loadFromXmlFile(const std::string & filePath, std::string * errorMessage)
@@ -397,6 +497,10 @@ bool LQos::loadFromXmlString(const std::string & xmlText, std::string * errorMes
     int32_t parsedHistoryDepth = historyDepth;
     int32_t parsedDeadlineMs = deadlineMs;
     bool parsedReliable = reliable;
+    int32_t parsedDomainId = static_cast<int32_t>(domainId);
+    bool parsedEnableDomainPortMapping = enableDomainPortMapping;
+    int32_t parsedBasePort = static_cast<int32_t>(basePort);
+    int32_t parsedDomainPortOffset = static_cast<int32_t>(domainPortOffset);
 
     if (const pugi::xml_attribute attr = root.attribute("transportType"))
     {
@@ -413,6 +517,22 @@ bool LQos::loadFromXmlString(const std::string & xmlText, std::string * errorMes
     if (const pugi::xml_attribute attr = root.attribute("reliable"))
     {
         parsedReliable = parseBoolText(attr.as_string(), parsedReliable);
+    }
+    if (const pugi::xml_attribute attr = root.attribute("domainId"))
+    {
+        parseIntText(attr.as_string(), parsedDomainId);
+    }
+    if (const pugi::xml_attribute attr = root.attribute("enableDomainPortMapping"))
+    {
+        parsedEnableDomainPortMapping = parseBoolText(attr.as_string(), parsedEnableDomainPortMapping);
+    }
+    if (const pugi::xml_attribute attr = root.attribute("basePort"))
+    {
+        parseIntText(attr.as_string(), parsedBasePort);
+    }
+    if (const pugi::xml_attribute attr = root.attribute("domainPortOffset"))
+    {
+        parseIntText(attr.as_string(), parsedDomainPortOffset);
     }
 
     if (const pugi::xml_node transportNode = root.child("transport"))
@@ -454,6 +574,27 @@ bool LQos::loadFromXmlString(const std::string & xmlText, std::string * errorMes
         }
     }
 
+    tryReadInt(root, "domainId", parsedDomainId);
+    tryReadBool(root, "enableDomainPortMapping", parsedEnableDomainPortMapping);
+    tryReadInt(root, "basePort", parsedBasePort);
+    tryReadInt(root, "domainPortOffset", parsedDomainPortOffset);
+
+    if (const pugi::xml_node domainNode = root.child("domain"))
+    {
+        tryReadIntAttr(domainNode, "id", parsedDomainId);
+    }
+
+    if (const pugi::xml_node mappingNode = root.child("portMapping"))
+    {
+        tryReadBoolAttr(mappingNode, "enable", parsedEnableDomainPortMapping);
+        tryReadBoolAttr(mappingNode, "enabled", parsedEnableDomainPortMapping);
+        tryReadIntAttr(mappingNode, "basePort", parsedBasePort);
+        tryReadIntAttr(mappingNode, "domainPortOffset", parsedDomainPortOffset);
+
+        tryReadInt(mappingNode, "basePort", parsedBasePort);
+        tryReadInt(mappingNode, "domainPortOffset", parsedDomainPortOffset);
+    }
+
     if (const pugi::xml_node reliableNode = root.child("reliable"))
     {
         parsedReliable = parseBoolText(reliableNode.text().as_string(), parsedReliable);
@@ -490,11 +631,39 @@ bool LQos::loadFromXmlString(const std::string & xmlText, std::string * errorMes
     {
         parsedDeadlineMs = 0;
     }
+    if (parsedDomainId < 0 || parsedDomainId > 255)
+    {
+        if (errorMessage != nullptr)
+        {
+            *errorMessage = "domainId must be in [0,255]";
+        }
+        return false;
+    }
+    if (parsedBasePort < 0 || parsedBasePort > 65535)
+    {
+        if (errorMessage != nullptr)
+        {
+            *errorMessage = "basePort must be in [0,65535]";
+        }
+        return false;
+    }
+    if (parsedDomainPortOffset < 0 || parsedDomainPortOffset > 65535)
+    {
+        if (errorMessage != nullptr)
+        {
+            *errorMessage = "domainPortOffset must be in [0,65535]";
+        }
+        return false;
+    }
 
     transportType = parsedTransport;
     historyDepth = parsedHistoryDepth;
     deadlineMs = parsedDeadlineMs;
     reliable = parsedReliable;
+    domainId = static_cast<uint8_t>(parsedDomainId);
+    enableDomainPortMapping = parsedEnableDomainPortMapping;
+    basePort = static_cast<uint16_t>(parsedBasePort);
+    domainPortOffset = static_cast<uint16_t>(parsedDomainPortOffset);
 
     m_history.enabled = true;
     m_history.kind = HistoryKind::KeepLast;

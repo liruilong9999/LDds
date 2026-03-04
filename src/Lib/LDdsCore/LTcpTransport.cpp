@@ -724,12 +724,12 @@ void LTcpTransport::processConnectionBuffer(const ConnectionPtr& connection)
         std::vector<uint8_t>& buffer = connection->receiveBuffer;
 
         while (true) {
-            if (buffer.size() < LMessageHeader::HEADER_SIZE) {
+            if (buffer.size() < LMessageHeader::LEGACY_HEADER_SIZE) {
                 break;
             }
 
             const uint32_t totalSize = readLeUInt32(buffer.data());
-            if (totalSize < LMessageHeader::HEADER_SIZE || totalSize > kMaxTcpMessageSize) {
+            if (totalSize < LMessageHeader::LEGACY_HEADER_SIZE || totalSize > kMaxTcpMessageSize) {
                 buffer.erase(buffer.begin());
                 continue;
             }

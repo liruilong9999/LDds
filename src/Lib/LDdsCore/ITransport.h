@@ -29,6 +29,9 @@ struct LDDSCORE_EXPORT TransportConfig {
     quint16 bindPort;
     QString remoteAddress;
     quint16 remotePort;
+    bool enableDomainPortMapping;
+    quint16 basePort;
+    quint16 domainPortOffset;
     bool enableBroadcast;
     int receiveBufferSize;
     int sendBufferSize;
