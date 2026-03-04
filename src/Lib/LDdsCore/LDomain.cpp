@@ -6,6 +6,7 @@
 #include "LDomain.h"
 
 #include "LQos.h"
+#include "SqliteDurabilityStore.h"
 
 #include <utility>
 
@@ -17,6 +18,10 @@ LDomain::LDomain() noexcept
     , m_participantCount(0)
     , m_valid(false)
     , m_historyDepth(1)
+    , m_persistentDurabilityEnabled(false)
+    , m_durabilityDbPath()
+    , m_localSequence(0)
+    , m_sqliteStore()
     , m_topicCache()
     , m_topicDataTypes()
 {
@@ -32,6 +37,10 @@ LDomain::LDomain(LDomain && other) noexcept
     , m_participantCount(other.m_participantCount)
     , m_valid(other.m_valid)
     , m_historyDepth(other.m_historyDepth)
+    , m_persistentDurabilityEnabled(other.m_persistentDurabilityEnabled)
+    , m_durabilityDbPath(std::move(other.m_durabilityDbPath))
+    , m_localSequence(other.m_localSequence)
+    , m_sqliteStore(std::move(other.m_sqliteStore))
 {
     {
         std::lock_guard<std::mutex> lock(other.m_topicCacheMutex);
@@ -43,6 +52,8 @@ LDomain::LDomain(LDomain && other) noexcept
     other.m_participantCount = 0;
     other.m_valid            = false;
     other.m_historyDepth     = 1;
+    other.m_persistentDurabilityEnabled = false;
+    other.m_localSequence = 0;
 }
 
 LDomain & LDomain::operator=(LDomain && other) noexcept
@@ -54,6 +65,10 @@ LDomain & LDomain::operator=(LDomain && other) noexcept
         m_participantCount = other.m_participantCount;
         m_valid            = other.m_valid;
         m_historyDepth     = other.m_historyDepth;
+        m_persistentDurabilityEnabled = other.m_persistentDurabilityEnabled;
+        m_durabilityDbPath = std::move(other.m_durabilityDbPath);
+        m_localSequence = other.m_localSequence;
+        m_sqliteStore = std::move(other.m_sqliteStore);
         {
             std::lock_guard<std::mutex> lockThis(m_topicCacheMutex);
             std::lock_guard<std::mutex> lockOther(other.m_topicCacheMutex);
@@ -65,6 +80,8 @@ LDomain & LDomain::operator=(LDomain && other) noexcept
         other.m_participantCount = 0;
         other.m_valid            = false;
         other.m_historyDepth     = 1;
+        other.m_persistentDurabilityEnabled = false;
+        other.m_localSequence = 0;
     }
     return *this;
 }
@@ -85,6 +102,11 @@ bool LDomain::create(DomainId domainId, const LQos * pQos)
     m_participantCount = 0;
     m_valid            = true;
     m_historyDepth     = 1;
+    m_persistentDurabilityEnabled = false;
+    m_localSequence = 0;
+    m_durabilityDbPath.clear();
+    m_sqliteStore.reset();
+    clearTopicCache();
 
     if (pQos != nullptr)
     {
@@ -93,14 +115,38 @@ bool LDomain::create(DomainId domainId, const LQos * pQos)
         {
             m_historyDepth = static_cast<size_t>(configuredDepth);
         }
+
+        const DurabilityQosPolicy durability = pQos->getDurability();
+        if (durability.enabled && durability.kind == DurabilityKind::Persistent)
+        {
+            m_persistentDurabilityEnabled = true;
+            m_durabilityDbPath = pQos->durabilityDbPath;
+            auto sqliteStore = std::make_unique<SqliteDurabilityStore>();
+            std::string storeError;
+            if (!sqliteStore->open(
+                    m_durabilityDbPath,
+                    static_cast<uint32_t>(m_domainId),
+                    m_historyDepth,
+                    &storeError))
+            {
+                destroy();
+                return false;
+            }
+
+            if (!sqliteStore->loadRecent(m_historyDepth, m_topicCache, m_topicDataTypes, &storeError))
+            {
+                destroy();
+                return false;
+            }
+
+            m_sqliteStore = std::move(sqliteStore);
+        }
     }
 
     if (m_name.empty())
     {
         m_name = "domain_" + std::to_string(m_domainId);
     }
-
-    clearTopicCache();
 
     (void)pQos;
     return true;
@@ -111,6 +157,14 @@ void LDomain::destroy() noexcept
     m_valid            = false;
     m_domainId         = INVALID_DOMAIN_ID;
     m_participantCount = 0;
+    m_persistentDurabilityEnabled = false;
+    m_localSequence = 0;
+    m_durabilityDbPath.clear();
+    if (m_sqliteStore)
+    {
+        m_sqliteStore->close();
+        m_sqliteStore.reset();
+    }
     clearTopicCache();
 }
 
@@ -143,6 +197,10 @@ void LDomain::setHistoryDepth(size_t depth) noexcept
 {
     std::lock_guard<std::mutex> lock(m_topicCacheMutex);
     m_historyDepth = depth == 0 ? 1 : depth;
+    if (m_sqliteStore)
+    {
+        m_sqliteStore->setHistoryDepth(m_historyDepth);
+    }
 }
 
 size_t LDomain::getHistoryDepth() const noexcept
@@ -175,6 +233,13 @@ void LDomain::cacheTopicData(
     if (!dataType.empty())
     {
         m_topicDataTypes[topic] = dataType;
+    }
+
+    ++m_localSequence;
+    if (m_sqliteStore && m_persistentDurabilityEnabled)
+    {
+        std::string ignoredError;
+        (void)m_sqliteStore->append(topic, data, dataType, m_localSequence, &ignoredError);
     }
 }
 

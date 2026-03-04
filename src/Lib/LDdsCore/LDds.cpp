@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstring>
 #include <exception>
+#include <filesystem>
 #include <limits>
 #include <string>
 #include <utility>
@@ -28,6 +29,28 @@ constexpr uint32_t DISCOVERY_CAP_MULTICAST = 0x04U;
 constexpr int32_t DISCOVERY_MIN_INTERVAL_MS = 300;
 constexpr int32_t DISCOVERY_MIN_PEER_TTL_MS = 1000;
 constexpr int32_t DISCOVERY_MAX_TOPICS = 1024;
+constexpr int32_t QOS_HOT_RELOAD_INTERVAL_MS = 1000;
+
+int64_t getFileWriteTick(const std::string & filePath)
+{
+    if (filePath.empty())
+    {
+        return -1;
+    }
+
+    std::error_code ec;
+    if (!std::filesystem::exists(filePath, ec) || ec)
+    {
+        return -1;
+    }
+
+    const auto writeTime = std::filesystem::last_write_time(filePath, ec);
+    if (ec)
+    {
+        return -1;
+    }
+    return static_cast<int64_t>(writeTime.time_since_epoch().count());
+}
 
 void appendU8(std::vector<uint8_t> & out, uint8_t value)
 {
@@ -226,6 +249,14 @@ LDds::LDds()
     , m_discoveryMutex()
     , m_knownTopics()
     , m_knownTopicsMutex()
+    , m_topicOwnership()
+    , m_ownershipMutex()
+    , m_qosHotReloadEnabled(false)
+    , m_qosXmlPath()
+    , m_qosLastWriteTick(-1)
+    , m_qosReloadInterval(QOS_HOT_RELOAD_INTERVAL_MS)
+    , m_lastQosReloadCheck(std::chrono::steady_clock::now())
+    , m_qosReloadMutex()
 {
 }
 
@@ -281,6 +312,17 @@ bool LDds::initialize(const LQos & qos, const TransportConfig & transportConfig,
     reliability.enabled = effectiveQos.reliable;
     reliability.kind = effectiveQos.reliable ? ReliabilityKind::Reliable : ReliabilityKind::BestEffort;
     effectiveQos.setReliability(reliability);
+
+    DurabilityQosPolicy durability = effectiveQos.getDurability();
+    durability.enabled = true;
+    durability.kind = effectiveQos.durabilityKind;
+    effectiveQos.setDurability(durability);
+
+    OwnershipQosPolicy ownership = effectiveQos.getOwnership();
+    ownership.enabled = true;
+    ownership.kind = effectiveQos.ownershipKind;
+    ownership.strength = std::max(0, effectiveQos.ownershipStrength);
+    effectiveQos.setOwnership(ownership);
 
     std::string validateError;
     if (!effectiveQos.validate(validateError))
@@ -406,6 +448,7 @@ bool LDds::initialize(const LQos & qos, const TransportConfig & transportConfig,
     }
 
     startQosThread();
+    clearQosHotReloadState();
     return true;
 }
 
@@ -421,7 +464,13 @@ bool LDds::initializeFromQosXml(
         setLastError("failed to load qos xml: " + error);
         return false;
     }
-    return initialize(parsedQos, transportConfig, domainId);
+    if (!initialize(parsedQos, transportConfig, domainId))
+    {
+        return false;
+    }
+
+    initializeQosHotReload(qosXmlPath);
+    return true;
 }
 
 void LDds::shutdown() noexcept
@@ -430,6 +479,7 @@ void LDds::shutdown() noexcept
     stopQosThread();
     clearReliableState();
     clearDiscoveryState();
+    clearQosHotReloadState();
 
     if (m_pTransport)
     {
@@ -451,6 +501,11 @@ void LDds::shutdown() noexcept
     {
         std::lock_guard<std::mutex> lock(m_knownTopicsMutex);
         m_knownTopics.clear();
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_ownershipMutex);
+        m_topicOwnership.clear();
     }
 
     m_domain.destroy();
@@ -1002,6 +1057,11 @@ void LDds::deliverDataMessage(const LMessage & message)
         return;
     }
 
+    if (!shouldAcceptMessageByOwnership(message, topic))
+    {
+        return;
+    }
+
     auto object = m_pTypeRegistry->createByTopic(topic);
     if (!object)
     {
@@ -1456,6 +1516,177 @@ std::vector<uint32_t> LDds::snapshotKnownTopics() const
     return topics;
 }
 
+bool LDds::shouldAcceptMessageByOwnership(const LMessage & message, uint32_t topic)
+{
+    const OwnershipQosPolicy ownership = m_qos.getOwnership();
+    if (!ownership.enabled || ownership.kind == OwnershipKind::Shared)
+    {
+        return true;
+    }
+
+    uint32_t writerId = message.getWriterId();
+    if (writerId == 0)
+    {
+        writerId = resolveReliableWriterId(message, message.getSenderAddress(), message.getSenderPort());
+    }
+    const uint32_t writerStrength = static_cast<uint32_t>(message.getAckSeq());
+
+    std::lock_guard<std::mutex> lock(m_ownershipMutex);
+    auto it = m_topicOwnership.find(topic);
+    if (it == m_topicOwnership.end())
+    {
+        m_topicOwnership.emplace(
+            topic,
+            OwnershipTopicState{writerId, writerStrength, std::chrono::steady_clock::now()});
+        return true;
+    }
+
+    OwnershipTopicState & current = it->second;
+    if (current.writerId == writerId)
+    {
+        current.strength = writerStrength;
+        current.lastSeen = std::chrono::steady_clock::now();
+        return true;
+    }
+
+    const bool stronger = writerStrength > current.strength;
+    const bool tieBreakTakeover = (writerStrength == current.strength) && (writerId > current.writerId);
+    if (stronger || tieBreakTakeover)
+    {
+        current.writerId = writerId;
+        current.strength = writerStrength;
+        current.lastSeen = std::chrono::steady_clock::now();
+        return true;
+    }
+    return false;
+}
+
+void LDds::initializeQosHotReload(const std::string & qosXmlPath)
+{
+    std::lock_guard<std::mutex> lock(m_qosReloadMutex);
+    m_qosXmlPath = qosXmlPath;
+    m_qosLastWriteTick = getFileWriteTick(qosXmlPath);
+    m_qosHotReloadEnabled = !qosXmlPath.empty() && (m_qosLastWriteTick >= 0);
+    m_qosReloadInterval = std::chrono::milliseconds(QOS_HOT_RELOAD_INTERVAL_MS);
+    m_lastQosReloadCheck = std::chrono::steady_clock::now();
+}
+
+void LDds::clearQosHotReloadState() noexcept
+{
+    std::lock_guard<std::mutex> lock(m_qosReloadMutex);
+    m_qosHotReloadEnabled = false;
+    m_qosXmlPath.clear();
+    m_qosLastWriteTick = -1;
+    m_lastQosReloadCheck = std::chrono::steady_clock::now();
+}
+
+void LDds::processQosHotReload(const std::chrono::steady_clock::time_point & now)
+{
+    std::string qosPath;
+    int64_t lastWriteTick = -1;
+    {
+        std::lock_guard<std::mutex> lock(m_qosReloadMutex);
+        if (!m_qosHotReloadEnabled)
+        {
+            return;
+        }
+
+        if (now - m_lastQosReloadCheck < m_qosReloadInterval)
+        {
+            return;
+        }
+
+        m_lastQosReloadCheck = now;
+        qosPath = m_qosXmlPath;
+        lastWriteTick = m_qosLastWriteTick;
+    }
+
+    const int64_t newWriteTick = getFileWriteTick(qosPath);
+    if (newWriteTick < 0 || newWriteTick == lastWriteTick)
+    {
+        return;
+    }
+
+    LQos loadedQos;
+    std::string loadError;
+    if (!loadedQos.loadFromXmlFile(qosPath, &loadError))
+    {
+        setLastError("qos hot reload parse failed: " + loadError);
+        return;
+    }
+
+    if (!applyHotReloadQos(loadedQos))
+    {
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_qosReloadMutex);
+        m_qosLastWriteTick = newWriteTick;
+    }
+}
+
+bool LDds::applyHotReloadQos(const LQos & loadedQos)
+{
+    bool reliabilityChanged = false;
+    {
+        std::lock_guard<std::mutex> lock(m_qosMutex);
+        if (loadedQos.deadlineMs >= 0 && loadedQos.deadlineMs != m_qos.deadlineMs)
+        {
+            m_qos.deadlineMs = loadedQos.deadlineMs;
+            DeadlineQosPolicy deadline = m_qos.getDeadline();
+            deadline.enabled = (m_qos.deadlineMs > 0);
+            deadline.period = Duration(m_qos.deadlineMs > 0 ? static_cast<int64_t>(m_qos.deadlineMs / 1000) : DURATION_INFINITY);
+            if (m_qos.deadlineMs > 0)
+            {
+                deadline.period.seconds = static_cast<int64_t>(m_qos.deadlineMs / 1000);
+                deadline.period.nanoseconds = static_cast<uint32_t>((m_qos.deadlineMs % 1000) * 1000000);
+            }
+            m_qos.setDeadline(deadline);
+        }
+
+        if (loadedQos.historyDepth > 0 && loadedQos.historyDepth != m_qos.historyDepth)
+        {
+            m_qos.historyDepth = loadedQos.historyDepth;
+            HistoryQosPolicy history = m_qos.getHistory();
+            history.depth = m_qos.historyDepth;
+            history.enabled = true;
+            m_qos.setHistory(history);
+            m_domain.setHistoryDepth(static_cast<size_t>(m_qos.historyDepth));
+        }
+
+        if (loadedQos.reliable != m_qos.reliable)
+        {
+            m_qos.reliable = loadedQos.reliable;
+            ReliabilityQosPolicy reliability = m_qos.getReliability();
+            reliability.enabled = m_qos.reliable;
+            reliability.kind = m_qos.reliable ? ReliabilityKind::Reliable : ReliabilityKind::BestEffort;
+            m_qos.setReliability(reliability);
+            reliabilityChanged = true;
+        }
+
+        const int32_t deadlineMs = resolveDeadlineMs(m_qos);
+        m_deadlineCheckInterval = (deadlineMs > 0) ? std::chrono::milliseconds(100) : std::chrono::milliseconds(1000);
+        m_heartbeatInterval = resolveHeartbeatInterval(deadlineMs);
+    }
+
+    if (reliabilityChanged)
+    {
+        initializeReliableState();
+    }
+
+    if (loadedQos.transportType != m_qos.transportType ||
+        loadedQos.domainId != m_qos.domainId)
+    {
+        setLastError("qos hot reload ignored transport/domain changes (restart required)");
+    }
+    else
+    {
+        setLastError("qos hot reload applied (deadline/history/reliability)");
+    }
+    return true;
+}
+
 uint32_t LDds::resolveReliableWriterId(
     const LMessage & message,
     const QHostAddress & senderAddress,
@@ -1504,6 +1735,12 @@ bool LDds::publishSerializedTopic(
         writerId = m_reliableWriterId;
         windowSize = m_reliableWindowSize;
     }
+    if (writerId == 0)
+    {
+        writerId = fnv1aHash32(std::to_string(reinterpret_cast<uintptr_t>(this)));
+    }
+    message.setWriterId(writerId);
+    message.setAckSeq(static_cast<uint64_t>(std::max(0, m_qos.ownershipStrength)));
 
     bool discoveryEnabled = false;
     {
@@ -1519,7 +1756,6 @@ bool LDds::publishSerializedTopic(
     if (reliableUdpEnabled)
     {
         const auto now = std::chrono::steady_clock::now();
-        message.setWriterId(writerId);
         message.setFirstSeq(sequence);
         message.setLastSeq(sequence);
         message.setWindowStart(sequence);
@@ -1748,6 +1984,7 @@ void LDds::qosThreadFunc()
                 (void)sendMessageThroughTransport(heartbeat);
             }
 
+            processQosHotReload(now);
             processDiscovery(now);
             processReliableOutgoing(now);
 

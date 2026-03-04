@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -19,6 +20,7 @@ namespace LDdsFramework {
 
 class LQos;
 class LParticipant;
+class SqliteDurabilityStore;
 
 /**
  * @brief Domain 标识类型。
@@ -167,6 +169,10 @@ private:
     bool m_valid;
 
     size_t m_historyDepth;
+    bool m_persistentDurabilityEnabled;
+    std::string m_durabilityDbPath;
+    uint64_t m_localSequence;
+    std::unique_ptr<SqliteDurabilityStore> m_sqliteStore;
     std::map<int, std::deque<std::vector<uint8_t>>> m_topicCache;
     std::map<int, std::string> m_topicDataTypes;
     mutable std::mutex m_topicCacheMutex;

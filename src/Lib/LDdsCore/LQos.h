@@ -225,6 +225,22 @@ struct UserDataQosPolicy
     }
 };
 
+struct OwnershipQosPolicy
+{
+    QosPolicyType policyId;
+    bool enabled;
+    OwnershipKind kind;
+    int32_t strength;
+
+    OwnershipQosPolicy() noexcept
+        : policyId(QosPolicyType::Ownership)
+        , enabled(true)
+        , kind(OwnershipKind::Shared)
+        , strength(0)
+    {
+    }
+};
+
 class LDDSCORE_EXPORT LQos final
 {
 public:
@@ -258,6 +274,9 @@ public:
     void setResourceLimits(const ResourceLimitsQosPolicy & policy) noexcept;
     const ResourceLimitsQosPolicy & getResourceLimits() const noexcept;
 
+    void setOwnership(const OwnershipQosPolicy & policy) noexcept;
+    const OwnershipQosPolicy & getOwnership() const noexcept;
+
     void setUserData(const UserDataQosPolicy & policy);
     const UserDataQosPolicy & getUserData() const noexcept;
 
@@ -277,6 +296,9 @@ public:
      * @brief 可靠性预留开关（阶段 7 预留位）。
      */
     bool    reliable;
+    DurabilityKind durabilityKind;
+    OwnershipKind ownershipKind;
+    int32_t ownershipStrength;
 
     /**
      * @brief 传输类型选择（UDP/TCP）。
@@ -286,6 +308,7 @@ public:
     bool enableDomainPortMapping;
     uint16_t basePort;
     uint16_t domainPortOffset;
+    std::string durabilityDbPath;
 
     /**
      * @brief 从 XML 文件加载 QoS（优先配置方式）。
@@ -303,6 +326,7 @@ private:
     LatencyBudgetQosPolicy m_latencyBudget;
     HistoryQosPolicy m_history;
     ResourceLimitsQosPolicy m_resourceLimits;
+    OwnershipQosPolicy m_ownership;
     UserDataQosPolicy m_userData;
 };
 

@@ -104,6 +104,48 @@ bool parseTransportTypeText(const std::string & text, TransportType & type)
     return false;
 }
 
+bool parseDurabilityKindText(const std::string & text, DurabilityKind & kind)
+{
+    const std::string lower = toLower(trim(text));
+    if (lower == "volatile")
+    {
+        kind = DurabilityKind::Volatile;
+        return true;
+    }
+    if (lower == "transientlocal" || lower == "transient_local" || lower == "transient-local")
+    {
+        kind = DurabilityKind::TransientLocal;
+        return true;
+    }
+    if (lower == "transient")
+    {
+        kind = DurabilityKind::Transient;
+        return true;
+    }
+    if (lower == "persistent")
+    {
+        kind = DurabilityKind::Persistent;
+        return true;
+    }
+    return false;
+}
+
+bool parseOwnershipKindText(const std::string & text, OwnershipKind & kind)
+{
+    const std::string lower = toLower(trim(text));
+    if (lower == "shared")
+    {
+        kind = OwnershipKind::Shared;
+        return true;
+    }
+    if (lower == "exclusive")
+    {
+        kind = OwnershipKind::Exclusive;
+        return true;
+    }
+    return false;
+}
+
 bool parseIntText(const std::string & text, int32_t & valueOut)
 {
     const std::string normalized = trim(text);
@@ -180,22 +222,30 @@ LQos::LQos() noexcept
     : historyDepth(1)
     , deadlineMs(0)
     , reliable(false)
+    , durabilityKind(DurabilityKind::Volatile)
+    , ownershipKind(OwnershipKind::Shared)
+    , ownershipStrength(0)
     , transportType(TransportType::UDP)
     , domainId(0)
     , enableDomainPortMapping(false)
     , basePort(20000)
     , domainPortOffset(10)
+    , durabilityDbPath()
     , m_reliability()
     , m_durability()
     , m_deadline()
     , m_latencyBudget()
     , m_history()
     , m_resourceLimits()
+    , m_ownership()
     , m_userData()
 {
     historyDepth = m_history.depth > 0 ? m_history.depth : 1;
     deadlineMs = durationToMs(m_deadline.period);
     reliable = m_reliability.enabled && (m_reliability.kind == ReliabilityKind::Reliable);
+    durabilityKind = m_durability.kind;
+    ownershipKind = m_ownership.kind;
+    ownershipStrength = std::max(0, m_ownership.strength);
 }
 
 LQos::LQos(const LQos & other) = default;
@@ -216,15 +266,20 @@ void LQos::resetToDefaults() noexcept
     m_latencyBudget  = LatencyBudgetQosPolicy();
     m_history        = HistoryQosPolicy();
     m_resourceLimits = ResourceLimitsQosPolicy();
+    m_ownership      = OwnershipQosPolicy();
     m_userData       = UserDataQosPolicy();
     historyDepth     = 1;
     deadlineMs       = 0;
     reliable         = false;
+    durabilityKind   = DurabilityKind::Volatile;
+    ownershipKind    = OwnershipKind::Shared;
+    ownershipStrength = 0;
     transportType    = TransportType::UDP;
     domainId         = 0;
     enableDomainPortMapping = false;
     basePort         = 20000;
     domainPortOffset = 10;
+    durabilityDbPath.clear();
 }
 
 void LQos::setTransportType(TransportType type) noexcept
@@ -251,6 +306,7 @@ const ReliabilityQosPolicy & LQos::getReliability() const noexcept
 void LQos::setDurability(const DurabilityQosPolicy & policy) noexcept
 {
     m_durability = policy;
+    durabilityKind = m_durability.kind;
 }
 
 const DurabilityQosPolicy & LQos::getDurability() const noexcept
@@ -300,6 +356,18 @@ const ResourceLimitsQosPolicy & LQos::getResourceLimits() const noexcept
     return m_resourceLimits;
 }
 
+void LQos::setOwnership(const OwnershipQosPolicy & policy) noexcept
+{
+    m_ownership = policy;
+    ownershipKind = m_ownership.kind;
+    ownershipStrength = std::max(0, m_ownership.strength);
+}
+
+const OwnershipQosPolicy & LQos::getOwnership() const noexcept
+{
+    return m_ownership;
+}
+
 void LQos::setUserData(const UserDataQosPolicy & policy)
 {
     m_userData = policy;
@@ -327,6 +395,12 @@ bool LQos::validate(std::string & errorMessage) const
     if (deadlineMs < 0)
     {
         errorMessage = "deadlineMs must be >= 0";
+        return false;
+    }
+
+    if (ownershipStrength < 0)
+    {
+        errorMessage = "ownershipStrength must be >= 0";
         return false;
     }
 
@@ -395,6 +469,18 @@ bool LQos::isCompatibleWith(const LQos & other, std::string & errorMessage) cons
         return false;
     }
 
+    if (durabilityKind != other.durabilityKind)
+    {
+        errorMessage = "durabilityKind mismatch";
+        return false;
+    }
+
+    if (ownershipKind != other.ownershipKind)
+    {
+        errorMessage = "ownershipKind mismatch";
+        return false;
+    }
+
     if (enableDomainPortMapping != other.enableDomainPortMapping)
     {
         errorMessage = "enableDomainPortMapping mismatch";
@@ -420,16 +506,21 @@ void LQos::merge(const LQos & other)
     m_latencyBudget = other.m_latencyBudget;
     m_history = other.m_history;
     m_resourceLimits = other.m_resourceLimits;
+    m_ownership = other.m_ownership;
     m_userData = other.m_userData;
 
     historyDepth = other.historyDepth;
     deadlineMs = other.deadlineMs;
     reliable = other.reliable;
+    durabilityKind = other.durabilityKind;
+    ownershipKind = other.ownershipKind;
+    ownershipStrength = other.ownershipStrength;
     transportType = other.transportType;
     domainId = other.domainId;
     enableDomainPortMapping = other.enableDomainPortMapping;
     basePort = other.basePort;
     domainPortOffset = other.domainPortOffset;
+    durabilityDbPath = other.durabilityDbPath;
 }
 
 bool LQos::loadFromXmlFile(const std::string & filePath, std::string * errorMessage)
@@ -497,10 +588,14 @@ bool LQos::loadFromXmlString(const std::string & xmlText, std::string * errorMes
     int32_t parsedHistoryDepth = historyDepth;
     int32_t parsedDeadlineMs = deadlineMs;
     bool parsedReliable = reliable;
+    DurabilityKind parsedDurabilityKind = durabilityKind;
+    OwnershipKind parsedOwnershipKind = ownershipKind;
+    int32_t parsedOwnershipStrength = ownershipStrength;
     int32_t parsedDomainId = static_cast<int32_t>(domainId);
     bool parsedEnableDomainPortMapping = enableDomainPortMapping;
     int32_t parsedBasePort = static_cast<int32_t>(basePort);
     int32_t parsedDomainPortOffset = static_cast<int32_t>(domainPortOffset);
+    std::string parsedDurabilityDbPath = durabilityDbPath;
 
     if (const pugi::xml_attribute attr = root.attribute("transportType"))
     {
@@ -518,6 +613,18 @@ bool LQos::loadFromXmlString(const std::string & xmlText, std::string * errorMes
     {
         parsedReliable = parseBoolText(attr.as_string(), parsedReliable);
     }
+    if (const pugi::xml_attribute attr = root.attribute("durability"))
+    {
+        parseDurabilityKindText(attr.as_string(), parsedDurabilityKind);
+    }
+    if (const pugi::xml_attribute attr = root.attribute("ownershipKind"))
+    {
+        parseOwnershipKindText(attr.as_string(), parsedOwnershipKind);
+    }
+    if (const pugi::xml_attribute attr = root.attribute("ownershipStrength"))
+    {
+        parseIntText(attr.as_string(), parsedOwnershipStrength);
+    }
     if (const pugi::xml_attribute attr = root.attribute("domainId"))
     {
         parseIntText(attr.as_string(), parsedDomainId);
@@ -533,6 +640,10 @@ bool LQos::loadFromXmlString(const std::string & xmlText, std::string * errorMes
     if (const pugi::xml_attribute attr = root.attribute("domainPortOffset"))
     {
         parseIntText(attr.as_string(), parsedDomainPortOffset);
+    }
+    if (const pugi::xml_attribute attr = root.attribute("durabilityDbPath"))
+    {
+        parsedDurabilityDbPath = trim(attr.as_string());
     }
 
     if (const pugi::xml_node transportNode = root.child("transport"))
@@ -595,6 +706,42 @@ bool LQos::loadFromXmlString(const std::string & xmlText, std::string * errorMes
         tryReadInt(mappingNode, "domainPortOffset", parsedDomainPortOffset);
     }
 
+    if (const pugi::xml_node durabilityNode = root.child("durability"))
+    {
+        if (const pugi::xml_attribute kindAttr = durabilityNode.attribute("kind"))
+        {
+            parseDurabilityKindText(kindAttr.as_string(), parsedDurabilityKind);
+        }
+        else
+        {
+            parseDurabilityKindText(durabilityNode.text().as_string(), parsedDurabilityKind);
+        }
+
+        if (const pugi::xml_attribute dbPathAttr = durabilityNode.attribute("dbPath"))
+        {
+            parsedDurabilityDbPath = trim(dbPathAttr.as_string());
+        }
+    }
+
+    if (const pugi::xml_node ownershipNode = root.child("ownership"))
+    {
+        if (const pugi::xml_attribute kindAttr = ownershipNode.attribute("kind"))
+        {
+            parseOwnershipKindText(kindAttr.as_string(), parsedOwnershipKind);
+        }
+
+        if (const pugi::xml_attribute strengthAttr = ownershipNode.attribute("strength"))
+        {
+            parseIntText(strengthAttr.as_string(), parsedOwnershipStrength);
+        }
+
+        int32_t ownershipStrengthNodeValue = parsedOwnershipStrength;
+        if (tryReadInt(ownershipNode, "strength", ownershipStrengthNodeValue))
+        {
+            parsedOwnershipStrength = ownershipStrengthNodeValue;
+        }
+    }
+
     if (const pugi::xml_node reliableNode = root.child("reliable"))
     {
         parsedReliable = parseBoolText(reliableNode.text().as_string(), parsedReliable);
@@ -655,15 +802,27 @@ bool LQos::loadFromXmlString(const std::string & xmlText, std::string * errorMes
         }
         return false;
     }
+    if (parsedOwnershipStrength < 0)
+    {
+        if (errorMessage != nullptr)
+        {
+            *errorMessage = "ownershipStrength must be >= 0";
+        }
+        return false;
+    }
 
     transportType = parsedTransport;
     historyDepth = parsedHistoryDepth;
     deadlineMs = parsedDeadlineMs;
     reliable = parsedReliable;
+    durabilityKind = parsedDurabilityKind;
+    ownershipKind = parsedOwnershipKind;
+    ownershipStrength = parsedOwnershipStrength;
     domainId = static_cast<uint8_t>(parsedDomainId);
     enableDomainPortMapping = parsedEnableDomainPortMapping;
     basePort = static_cast<uint16_t>(parsedBasePort);
     domainPortOffset = static_cast<uint16_t>(parsedDomainPortOffset);
+    durabilityDbPath = parsedDurabilityDbPath;
 
     m_history.enabled = true;
     m_history.kind = HistoryKind::KeepLast;
@@ -674,6 +833,11 @@ bool LQos::loadFromXmlString(const std::string & xmlText, std::string * errorMes
 
     m_reliability.enabled = reliable;
     m_reliability.kind = reliable ? ReliabilityKind::Reliable : ReliabilityKind::BestEffort;
+    m_durability.enabled = true;
+    m_durability.kind = durabilityKind;
+    m_ownership.enabled = true;
+    m_ownership.kind = ownershipKind;
+    m_ownership.strength = ownershipStrength;
 
     std::string validateError;
     if (!validate(validateError))

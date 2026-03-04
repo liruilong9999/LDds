@@ -9,6 +9,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <map>
@@ -197,6 +198,13 @@ private:
         std::map<uint64_t, LMessage> bufferedMessages;
     };
 
+    struct OwnershipTopicState
+    {
+        uint32_t writerId;
+        uint32_t strength;
+        std::chrono::steady_clock::time_point lastSeen;
+    };
+
     bool createTransportFromQos(const LQos & qos, const TransportConfig & transportConfig);
     bool sendMessageThroughTransport(
         const LMessage & message,
@@ -229,6 +237,11 @@ private:
     std::vector<std::pair<QHostAddress, quint16>> snapshotDiscoveryTargets(uint32_t topic) const;
     void rememberKnownTopic(uint32_t topic);
     std::vector<uint32_t> snapshotKnownTopics() const;
+    bool shouldAcceptMessageByOwnership(const LMessage & message, uint32_t topic);
+    void initializeQosHotReload(const std::string & qosXmlPath);
+    void clearQosHotReloadState() noexcept;
+    void processQosHotReload(const std::chrono::steady_clock::time_point & now);
+    bool applyHotReloadQos(const LQos & loadedQos);
     uint32_t resolveReliableWriterId(
         const LMessage & message,
         const QHostAddress & senderAddress,
@@ -298,6 +311,16 @@ private:
 
     std::unordered_set<uint32_t> m_knownTopics;
     mutable std::mutex m_knownTopicsMutex;
+
+    std::unordered_map<uint32_t, OwnershipTopicState> m_topicOwnership;
+    mutable std::mutex m_ownershipMutex;
+
+    bool m_qosHotReloadEnabled;
+    std::string m_qosXmlPath;
+    int64_t m_qosLastWriteTick;
+    std::chrono::milliseconds m_qosReloadInterval;
+    std::chrono::steady_clock::time_point m_lastQosReloadCheck;
+    mutable std::mutex m_qosReloadMutex;
 };
 
 const char * getVersion() noexcept;
