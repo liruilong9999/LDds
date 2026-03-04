@@ -231,6 +231,13 @@ LQos::LQos() noexcept
     , basePort(20000)
     , domainPortOffset(10)
     , durabilityDbPath()
+    , enableMetrics(false)
+    , metricsPort(0)
+    , metricsBindAddress("127.0.0.1")
+    , structuredLogEnabled(false)
+    , securityEnabled(false)
+    , securityEncryptPayload(false)
+    , securityPsk()
     , m_reliability()
     , m_durability()
     , m_deadline()
@@ -280,6 +287,13 @@ void LQos::resetToDefaults() noexcept
     basePort         = 20000;
     domainPortOffset = 10;
     durabilityDbPath.clear();
+    enableMetrics = false;
+    metricsPort = 0;
+    metricsBindAddress = "127.0.0.1";
+    structuredLogEnabled = false;
+    securityEnabled = false;
+    securityEncryptPayload = false;
+    securityPsk.clear();
 }
 
 void LQos::setTransportType(TransportType type) noexcept
@@ -433,6 +447,12 @@ bool LQos::validate(std::string & errorMessage) const
         }
     }
 
+    if (securityEnabled && securityPsk.empty())
+    {
+        errorMessage = "securityPsk must not be empty when securityEnabled=true";
+        return false;
+    }
+
     errorMessage.clear();
     return true;
 }
@@ -494,6 +514,19 @@ bool LQos::isCompatibleWith(const LQos & other, std::string & errorMessage) cons
         return false;
     }
 
+    if (securityEnabled != other.securityEnabled)
+    {
+        errorMessage = "securityEnabled mismatch";
+        return false;
+    }
+
+    if (securityEnabled &&
+        (securityEncryptPayload != other.securityEncryptPayload || securityPsk != other.securityPsk))
+    {
+        errorMessage = "security configuration mismatch";
+        return false;
+    }
+
     errorMessage.clear();
     return true;
 }
@@ -521,6 +554,13 @@ void LQos::merge(const LQos & other)
     basePort = other.basePort;
     domainPortOffset = other.domainPortOffset;
     durabilityDbPath = other.durabilityDbPath;
+    enableMetrics = other.enableMetrics;
+    metricsPort = other.metricsPort;
+    metricsBindAddress = other.metricsBindAddress;
+    structuredLogEnabled = other.structuredLogEnabled;
+    securityEnabled = other.securityEnabled;
+    securityEncryptPayload = other.securityEncryptPayload;
+    securityPsk = other.securityPsk;
 }
 
 bool LQos::loadFromXmlFile(const std::string & filePath, std::string * errorMessage)
@@ -596,6 +636,13 @@ bool LQos::loadFromXmlString(const std::string & xmlText, std::string * errorMes
     int32_t parsedBasePort = static_cast<int32_t>(basePort);
     int32_t parsedDomainPortOffset = static_cast<int32_t>(domainPortOffset);
     std::string parsedDurabilityDbPath = durabilityDbPath;
+    bool parsedEnableMetrics = enableMetrics;
+    int32_t parsedMetricsPort = static_cast<int32_t>(metricsPort);
+    std::string parsedMetricsBindAddress = metricsBindAddress;
+    bool parsedStructuredLogEnabled = structuredLogEnabled;
+    bool parsedSecurityEnabled = securityEnabled;
+    bool parsedSecurityEncryptPayload = securityEncryptPayload;
+    std::string parsedSecurityPsk = securityPsk;
 
     if (const pugi::xml_attribute attr = root.attribute("transportType"))
     {
@@ -645,6 +692,34 @@ bool LQos::loadFromXmlString(const std::string & xmlText, std::string * errorMes
     {
         parsedDurabilityDbPath = trim(attr.as_string());
     }
+    if (const pugi::xml_attribute attr = root.attribute("enableMetrics"))
+    {
+        parsedEnableMetrics = parseBoolText(attr.as_string(), parsedEnableMetrics);
+    }
+    if (const pugi::xml_attribute attr = root.attribute("metricsPort"))
+    {
+        parseIntText(attr.as_string(), parsedMetricsPort);
+    }
+    if (const pugi::xml_attribute attr = root.attribute("metricsBindAddress"))
+    {
+        parsedMetricsBindAddress = trim(attr.as_string());
+    }
+    if (const pugi::xml_attribute attr = root.attribute("structuredLogEnabled"))
+    {
+        parsedStructuredLogEnabled = parseBoolText(attr.as_string(), parsedStructuredLogEnabled);
+    }
+    if (const pugi::xml_attribute attr = root.attribute("securityEnabled"))
+    {
+        parsedSecurityEnabled = parseBoolText(attr.as_string(), parsedSecurityEnabled);
+    }
+    if (const pugi::xml_attribute attr = root.attribute("securityEncryptPayload"))
+    {
+        parsedSecurityEncryptPayload = parseBoolText(attr.as_string(), parsedSecurityEncryptPayload);
+    }
+    if (const pugi::xml_attribute attr = root.attribute("securityPsk"))
+    {
+        parsedSecurityPsk = trim(attr.as_string());
+    }
 
     if (const pugi::xml_node transportNode = root.child("transport"))
     {
@@ -689,6 +764,20 @@ bool LQos::loadFromXmlString(const std::string & xmlText, std::string * errorMes
     tryReadBool(root, "enableDomainPortMapping", parsedEnableDomainPortMapping);
     tryReadInt(root, "basePort", parsedBasePort);
     tryReadInt(root, "domainPortOffset", parsedDomainPortOffset);
+    tryReadBool(root, "enableMetrics", parsedEnableMetrics);
+    tryReadInt(root, "metricsPort", parsedMetricsPort);
+    tryReadBool(root, "structuredLogEnabled", parsedStructuredLogEnabled);
+    tryReadBool(root, "securityEnabled", parsedSecurityEnabled);
+    tryReadBool(root, "securityEncryptPayload", parsedSecurityEncryptPayload);
+
+    if (const pugi::xml_node metricsBindNode = root.child("metricsBindAddress"))
+    {
+        parsedMetricsBindAddress = trim(metricsBindNode.text().as_string());
+    }
+    if (const pugi::xml_node securityPskNode = root.child("securityPsk"))
+    {
+        parsedSecurityPsk = trim(securityPskNode.text().as_string());
+    }
 
     if (const pugi::xml_node domainNode = root.child("domain"))
     {
@@ -704,6 +793,54 @@ bool LQos::loadFromXmlString(const std::string & xmlText, std::string * errorMes
 
         tryReadInt(mappingNode, "basePort", parsedBasePort);
         tryReadInt(mappingNode, "domainPortOffset", parsedDomainPortOffset);
+    }
+
+    if (const pugi::xml_node metricsNode = root.child("metrics"))
+    {
+        tryReadBoolAttr(metricsNode, "enable", parsedEnableMetrics);
+        tryReadBoolAttr(metricsNode, "enabled", parsedEnableMetrics);
+        tryReadIntAttr(metricsNode, "port", parsedMetricsPort);
+        if (const pugi::xml_attribute bindAttr = metricsNode.attribute("bindAddress"))
+        {
+            parsedMetricsBindAddress = trim(bindAttr.as_string());
+        }
+        if (const pugi::xml_attribute bindAttr = metricsNode.attribute("address"))
+        {
+            parsedMetricsBindAddress = trim(bindAttr.as_string());
+        }
+        if (!metricsNode.text().empty())
+        {
+            const std::string text = trim(metricsNode.text().as_string());
+            if (!text.empty())
+            {
+                parsedMetricsBindAddress = text;
+            }
+        }
+    }
+
+    if (const pugi::xml_node loggingNode = root.child("logging"))
+    {
+        tryReadBoolAttr(loggingNode, "structured", parsedStructuredLogEnabled);
+        tryReadBoolAttr(loggingNode, "structuredEnabled", parsedStructuredLogEnabled);
+    }
+
+    if (const pugi::xml_node securityNode = root.child("security"))
+    {
+        tryReadBoolAttr(securityNode, "enable", parsedSecurityEnabled);
+        tryReadBoolAttr(securityNode, "enabled", parsedSecurityEnabled);
+        tryReadBoolAttr(securityNode, "encryptPayload", parsedSecurityEncryptPayload);
+        if (const pugi::xml_attribute pskAttr = securityNode.attribute("psk"))
+        {
+            parsedSecurityPsk = trim(pskAttr.as_string());
+        }
+        if (const pugi::xml_node pskNode = securityNode.child("psk"))
+        {
+            const std::string text = trim(pskNode.text().as_string());
+            if (!text.empty())
+            {
+                parsedSecurityPsk = text;
+            }
+        }
     }
 
     if (const pugi::xml_node durabilityNode = root.child("durability"))
@@ -802,6 +939,14 @@ bool LQos::loadFromXmlString(const std::string & xmlText, std::string * errorMes
         }
         return false;
     }
+    if (parsedMetricsPort < 0 || parsedMetricsPort > 65535)
+    {
+        if (errorMessage != nullptr)
+        {
+            *errorMessage = "metricsPort must be in [0,65535]";
+        }
+        return false;
+    }
     if (parsedOwnershipStrength < 0)
     {
         if (errorMessage != nullptr)
@@ -823,6 +968,13 @@ bool LQos::loadFromXmlString(const std::string & xmlText, std::string * errorMes
     basePort = static_cast<uint16_t>(parsedBasePort);
     domainPortOffset = static_cast<uint16_t>(parsedDomainPortOffset);
     durabilityDbPath = parsedDurabilityDbPath;
+    enableMetrics = parsedEnableMetrics;
+    metricsPort = static_cast<uint16_t>(parsedMetricsPort);
+    metricsBindAddress = parsedMetricsBindAddress.empty() ? std::string("127.0.0.1") : parsedMetricsBindAddress;
+    structuredLogEnabled = parsedStructuredLogEnabled;
+    securityEnabled = parsedSecurityEnabled;
+    securityEncryptPayload = parsedSecurityEncryptPayload;
+    securityPsk = parsedSecurityPsk;
 
     m_history.enabled = true;
     m_history.kind = HistoryKind::KeepLast;

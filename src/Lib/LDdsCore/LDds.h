@@ -38,6 +38,7 @@ class LDDSCORE_EXPORT LDds final
 public:
     using TopicCallback = std::function<void(uint32_t topic, const std::shared_ptr<void> & object)>;
     using DeadlineMissedCallback = std::function<void(uint32_t topic, uint64_t elapsedMs)>;
+    using LogCallback = std::function<void(const std::string & line)>;
 
     LDds();
     ~LDds();
@@ -155,6 +156,8 @@ public:
 
     void unsubscribeTopic(uint32_t topic);
     void setDeadlineMissedCallback(DeadlineMissedCallback callback);
+    void setLogCallback(LogCallback callback);
+    std::string exportMetricsText() const;
 
     const LQos & getQos() const noexcept;
     TransportProtocol getTransportProtocol() const noexcept;
@@ -205,6 +208,43 @@ private:
         std::chrono::steady_clock::time_point lastSeen;
     };
 
+    struct SecurityRuntimeConfig
+    {
+        bool enabled;
+        bool encryptPayload;
+        std::string psk;
+    };
+
+    struct RuntimeMetrics
+    {
+        std::atomic<uint64_t> sentMessages;
+        std::atomic<uint64_t> receivedMessages;
+        std::atomic<uint64_t> estimatedDrops;
+        std::atomic<uint64_t> retransmitCount;
+        std::atomic<uint64_t> deadlineMissCount;
+        std::atomic<uint64_t> authRejectedCount;
+        std::atomic<uint64_t> sentBytes;
+        std::atomic<uint64_t> receivedBytes;
+        std::atomic<uint64_t> queueDropCount;
+        std::atomic<uint64_t> queueLength;
+        std::atomic<uint64_t> connectionCount;
+
+        RuntimeMetrics() noexcept
+            : sentMessages(0)
+            , receivedMessages(0)
+            , estimatedDrops(0)
+            , retransmitCount(0)
+            , deadlineMissCount(0)
+            , authRejectedCount(0)
+            , sentBytes(0)
+            , receivedBytes(0)
+            , queueDropCount(0)
+            , queueLength(0)
+            , connectionCount(0)
+        {
+        }
+    };
+
     bool createTransportFromQos(const LQos & qos, const TransportConfig & transportConfig);
     bool sendMessageThroughTransport(
         const LMessage & message,
@@ -242,6 +282,20 @@ private:
     void clearQosHotReloadState() noexcept;
     void processQosHotReload(const std::chrono::steady_clock::time_point & now);
     bool applyHotReloadQos(const LQos & loadedQos);
+    SecurityRuntimeConfig snapshotSecurityConfig() const;
+    bool applyOutgoingSecurity(LMessage & message);
+    bool verifyIncomingSecurity(LMessage & message);
+    void updateDropEstimate(const LMessage & message, const QHostAddress & senderAddress, quint16 senderPort);
+    void updateRuntimeGauges();
+    void resetRuntimeMetrics() noexcept;
+    void emitStructuredLog(
+        const char * level,
+        const char * module,
+        const std::string & text,
+        const LMessage * message = nullptr,
+        const QHostAddress * peerAddress = nullptr,
+        quint16 peerPort = 0);
+    std::string makeMessageId(const LMessage & message) const;
     uint32_t resolveReliableWriterId(
         const LMessage & message,
         const QHostAddress & senderAddress,
@@ -321,6 +375,17 @@ private:
     std::chrono::milliseconds m_qosReloadInterval;
     std::chrono::steady_clock::time_point m_lastQosReloadCheck;
     mutable std::mutex m_qosReloadMutex;
+
+    RuntimeMetrics m_metrics;
+    mutable std::mutex m_metricsMutex;
+    std::unordered_map<uint32_t, uint64_t> m_lossEstimateByWriter;
+
+    mutable std::mutex m_securityMutex;
+    SecurityRuntimeConfig m_securityConfig;
+
+    mutable std::mutex m_logMutex;
+    bool m_structuredLogEnabled;
+    LogCallback m_logCallback;
 };
 
 const char * getVersion() noexcept;

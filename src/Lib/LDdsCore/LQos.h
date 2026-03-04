@@ -309,6 +309,13 @@ public:
     uint16_t basePort;
     uint16_t domainPortOffset;
     std::string durabilityDbPath;
+    bool enableMetrics;
+    uint16_t metricsPort;
+    std::string metricsBindAddress;
+    bool structuredLogEnabled;
+    bool securityEnabled;
+    bool securityEncryptPayload;
+    std::string securityPsk;
 
     /**
      * @brief 从 XML 文件加载 QoS（优先配置方式）。

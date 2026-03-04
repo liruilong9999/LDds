@@ -1,12 +1,16 @@
 #include "LDds.h"
+#include "LTcpTransport.h"
 #include "LUdpTransport.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <chrono>
 #include <cstring>
 #include <exception>
 #include <filesystem>
+#include <iostream>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <utility>
 
@@ -30,6 +34,11 @@ constexpr int32_t DISCOVERY_MIN_INTERVAL_MS = 300;
 constexpr int32_t DISCOVERY_MIN_PEER_TTL_MS = 1000;
 constexpr int32_t DISCOVERY_MAX_TOPICS = 1024;
 constexpr int32_t QOS_HOT_RELOAD_INTERVAL_MS = 1000;
+constexpr uint8_t SECURITY_ENVELOPE_MAGIC = 0xA5U;
+constexpr uint8_t SECURITY_ENVELOPE_VERSION = 1U;
+constexpr uint8_t SECURITY_FLAG_ENCRYPTED = 0x01U;
+constexpr size_t SECURITY_ENVELOPE_PREFIX_SIZE =
+    sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint64_t) + sizeof(uint64_t);
 
 int64_t getFileWriteTick(const std::string & filePath)
 {
@@ -71,6 +80,14 @@ void appendU32(std::vector<uint8_t> & out, uint32_t value)
     out.push_back(static_cast<uint8_t>((value >> 24) & 0xFFU));
 }
 
+void appendU64(std::vector<uint8_t> & out, uint64_t value)
+{
+    for (int i = 0; i < 8; ++i)
+    {
+        out.push_back(static_cast<uint8_t>((value >> (i * 8)) & 0xFFU));
+    }
+}
+
 bool readU8(const std::vector<uint8_t> & data, size_t & offset, uint8_t & value)
 {
     if (offset + 1 > data.size())
@@ -108,6 +125,21 @@ bool readU32(const std::vector<uint8_t> & data, size_t & offset, uint32_t & valu
     return true;
 }
 
+bool readU64(const std::vector<uint8_t> & data, size_t & offset, uint64_t & value)
+{
+    if (offset + 8 > data.size())
+    {
+        return false;
+    }
+    value = 0;
+    for (int i = 0; i < 8; ++i)
+    {
+        value |= (static_cast<uint64_t>(data[offset + static_cast<size_t>(i)]) << (8 * i));
+    }
+    offset += 8;
+    return true;
+}
+
 QHostAddress resolveDomainMulticastGroup(DomainId domainId)
 {
     return QHostAddress(QStringLiteral("239.255.0.%1").arg(static_cast<uint32_t>(domainId)));
@@ -122,6 +154,119 @@ uint32_t fnv1aHash32(const std::string & value)
         hash *= 16777619U;
     }
     return (hash == 0U) ? 1U : hash;
+}
+
+uint64_t fnv1aHash64Bytes(const uint8_t * data, size_t size, uint64_t seed = 1469598103934665603ULL)
+{
+    uint64_t hash = seed;
+    for (size_t i = 0; i < size; ++i)
+    {
+        hash ^= static_cast<uint64_t>(data[i]);
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+uint64_t fnv1aHash64(const std::string & value, uint64_t seed = 1469598103934665603ULL)
+{
+    return fnv1aHash64Bytes(
+        reinterpret_cast<const uint8_t *>(value.data()),
+        value.size(),
+        seed);
+}
+
+void hashAppendU8(uint64_t & hash, uint8_t value)
+{
+    hash = fnv1aHash64Bytes(&value, sizeof(value), hash);
+}
+
+void hashAppendU32(uint64_t & hash, uint32_t value)
+{
+    uint8_t data[4];
+    data[0] = static_cast<uint8_t>(value & 0xFFU);
+    data[1] = static_cast<uint8_t>((value >> 8) & 0xFFU);
+    data[2] = static_cast<uint8_t>((value >> 16) & 0xFFU);
+    data[3] = static_cast<uint8_t>((value >> 24) & 0xFFU);
+    hash = fnv1aHash64Bytes(data, sizeof(data), hash);
+}
+
+void hashAppendU64(uint64_t & hash, uint64_t value)
+{
+    uint8_t data[8];
+    for (int i = 0; i < 8; ++i)
+    {
+        data[i] = static_cast<uint8_t>((value >> (i * 8)) & 0xFFU);
+    }
+    hash = fnv1aHash64Bytes(data, sizeof(data), hash);
+}
+
+uint64_t xorshift64Star(uint64_t & state)
+{
+    state ^= state >> 12;
+    state ^= state << 25;
+    state ^= state >> 27;
+    return state * 2685821657736338717ULL;
+}
+
+void applySymmetricCipher(std::vector<uint8_t> & payload, const std::string & psk, uint64_t nonce)
+{
+    uint64_t state = fnv1aHash64(psk);
+    state ^= nonce + 0x9E3779B97F4A7C15ULL;
+    if (state == 0)
+    {
+        state = 0xA5A5A5A5A5A5A5A5ULL;
+    }
+
+    for (size_t i = 0; i < payload.size(); ++i)
+    {
+        const uint64_t stream = xorshift64Star(state);
+        payload[i] ^= static_cast<uint8_t>((stream >> ((i % 8) * 8)) & 0xFFU);
+    }
+}
+
+uint64_t computeSecurityTag(
+    const std::string & psk,
+    const LMessage & message,
+    uint8_t flags,
+    uint64_t nonce,
+    const std::vector<uint8_t> & body)
+{
+    uint64_t hash = fnv1aHash64(psk);
+    hashAppendU8(hash, message.getDomainId());
+    hashAppendU8(hash, static_cast<uint8_t>(message.getMessageType()));
+    hashAppendU32(hash, message.getTopic());
+    hashAppendU64(hash, message.getSequence());
+    hashAppendU32(hash, message.getWriterId());
+    hashAppendU64(hash, nonce);
+    hashAppendU8(hash, flags);
+    if (!body.empty())
+    {
+        hash = fnv1aHash64Bytes(body.data(), body.size(), hash);
+    }
+    return hash;
+}
+
+std::string messageTypeToText(LMessageType type)
+{
+    switch (type)
+    {
+    case LMessageType::Data:
+        return "Data";
+    case LMessageType::Heartbeat:
+        return "Heartbeat";
+    case LMessageType::Ack:
+        return "Ack";
+    case LMessageType::Nack:
+        return "Nack";
+    case LMessageType::HeartbeatReq:
+        return "HeartbeatReq";
+    case LMessageType::HeartbeatRsp:
+        return "HeartbeatRsp";
+    case LMessageType::DiscoveryAnnounce:
+        return "DiscoveryAnnounce";
+    default:
+        return "Unknown";
+    }
 }
 
 int32_t resolveDeadlineMs(const LQos & qos)
@@ -257,6 +402,14 @@ LDds::LDds()
     , m_qosReloadInterval(QOS_HOT_RELOAD_INTERVAL_MS)
     , m_lastQosReloadCheck(std::chrono::steady_clock::now())
     , m_qosReloadMutex()
+    , m_metrics()
+    , m_metricsMutex()
+    , m_lossEstimateByWriter()
+    , m_securityMutex()
+    , m_securityConfig{false, false, std::string()}
+    , m_logMutex()
+    , m_structuredLogEnabled(false)
+    , m_logCallback()
 {
 }
 
@@ -412,6 +565,14 @@ bool LDds::initialize(const LQos & qos, const TransportConfig & transportConfig,
 
     m_qos = effectiveQos;
     m_effectiveDomainId = effectiveDomainId;
+    {
+        std::lock_guard<std::mutex> lock(m_securityMutex);
+        m_securityConfig.enabled = effectiveQos.securityEnabled;
+        m_securityConfig.encryptPayload = effectiveQos.securityEncryptPayload;
+        m_securityConfig.psk = effectiveQos.securityPsk;
+    }
+    m_structuredLogEnabled = effectiveQos.structuredLogEnabled;
+    resetRuntimeMetrics();
 
     if (!createTransportFromQos(effectiveQos, effectiveTransportConfig))
     {
@@ -435,6 +596,7 @@ bool LDds::initialize(const LQos & qos, const TransportConfig & transportConfig,
 
     initializeReliableState();
     initializeDiscoveryState(effectiveTransportConfig);
+    updateRuntimeGauges();
 
     m_sequence.store(0);
     m_running.store(true);
@@ -449,6 +611,11 @@ bool LDds::initialize(const LQos & qos, const TransportConfig & transportConfig,
 
     startQosThread();
     clearQosHotReloadState();
+    emitStructuredLog(
+        "info",
+        "ldds",
+        "initialize success transport=" +
+            std::string(effectiveQos.transportType == TransportType::TCP ? "tcp" : "udp"));
     return true;
 }
 
@@ -508,9 +675,19 @@ void LDds::shutdown() noexcept
         m_topicOwnership.clear();
     }
 
+    {
+        std::lock_guard<std::mutex> lock(m_metricsMutex);
+        m_lossEstimateByWriter.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_securityMutex);
+        m_securityConfig = SecurityRuntimeConfig{false, false, std::string()};
+    }
+
     m_domain.destroy();
     m_effectiveDomainId = DEFAULT_DOMAIN_ID;
     m_sequence.store(0);
+    updateRuntimeGauges();
 }
 
 bool LDds::isRunning() const noexcept
@@ -608,6 +785,63 @@ void LDds::setDeadlineMissedCallback(DeadlineMissedCallback callback)
     m_deadlineMissedCallback = std::move(callback);
 }
 
+void LDds::setLogCallback(LogCallback callback)
+{
+    std::lock_guard<std::mutex> lock(m_logMutex);
+    m_logCallback = std::move(callback);
+}
+
+std::string LDds::exportMetricsText() const
+{
+    const uint64_t sentMessages = m_metrics.sentMessages.load();
+    const uint64_t receivedMessages = m_metrics.receivedMessages.load();
+    const uint64_t estimatedDrops = m_metrics.estimatedDrops.load();
+    const uint64_t retransmitCount = m_metrics.retransmitCount.load();
+    const uint64_t queueLength = m_metrics.queueLength.load();
+    const uint64_t queueDropCount = m_metrics.queueDropCount.load();
+    const uint64_t connectionCount = m_metrics.connectionCount.load();
+    const uint64_t deadlineMissCount = m_metrics.deadlineMissCount.load();
+    const uint64_t authRejectedCount = m_metrics.authRejectedCount.load();
+    const uint64_t sentBytes = m_metrics.sentBytes.load();
+    const uint64_t receivedBytes = m_metrics.receivedBytes.load();
+
+    std::ostringstream output;
+    output << "# TYPE ldds_messages_sent_total counter\n";
+    output << "ldds_messages_sent_total{domain=\"" << static_cast<uint32_t>(m_effectiveDomainId)
+           << "\"} " << sentMessages << "\n";
+    output << "# TYPE ldds_messages_received_total counter\n";
+    output << "ldds_messages_received_total{domain=\"" << static_cast<uint32_t>(m_effectiveDomainId)
+           << "\"} " << receivedMessages << "\n";
+    output << "# TYPE ldds_drop_estimated_total counter\n";
+    output << "ldds_drop_estimated_total{domain=\"" << static_cast<uint32_t>(m_effectiveDomainId)
+           << "\"} " << estimatedDrops << "\n";
+    output << "# TYPE ldds_retransmit_total counter\n";
+    output << "ldds_retransmit_total{domain=\"" << static_cast<uint32_t>(m_effectiveDomainId)
+           << "\"} " << retransmitCount << "\n";
+    output << "# TYPE ldds_queue_length gauge\n";
+    output << "ldds_queue_length{domain=\"" << static_cast<uint32_t>(m_effectiveDomainId)
+           << "\"} " << queueLength << "\n";
+    output << "# TYPE ldds_queue_drop_total counter\n";
+    output << "ldds_queue_drop_total{domain=\"" << static_cast<uint32_t>(m_effectiveDomainId)
+           << "\"} " << queueDropCount << "\n";
+    output << "# TYPE ldds_connections gauge\n";
+    output << "ldds_connections{domain=\"" << static_cast<uint32_t>(m_effectiveDomainId)
+           << "\"} " << connectionCount << "\n";
+    output << "# TYPE ldds_deadline_miss_total counter\n";
+    output << "ldds_deadline_miss_total{domain=\"" << static_cast<uint32_t>(m_effectiveDomainId)
+           << "\"} " << deadlineMissCount << "\n";
+    output << "# TYPE ldds_auth_rejected_total counter\n";
+    output << "ldds_auth_rejected_total{domain=\"" << static_cast<uint32_t>(m_effectiveDomainId)
+           << "\"} " << authRejectedCount << "\n";
+    output << "# TYPE ldds_sent_bytes_total counter\n";
+    output << "ldds_sent_bytes_total{domain=\"" << static_cast<uint32_t>(m_effectiveDomainId)
+           << "\"} " << sentBytes << "\n";
+    output << "# TYPE ldds_received_bytes_total counter\n";
+    output << "ldds_received_bytes_total{domain=\"" << static_cast<uint32_t>(m_effectiveDomainId)
+           << "\"} " << receivedBytes << "\n";
+    return output.str();
+}
+
 const LQos & LDds::getQos() const noexcept
 {
     return m_qos;
@@ -666,6 +900,13 @@ bool LDds::sendMessageThroughTransport(
         return false;
     }
 
+    LMessage outgoing = message;
+    if (!applyOutgoingSecurity(outgoing))
+    {
+        return false;
+    }
+
+    bool sent = false;
     if (targetAddress != nullptr && !targetAddress->isNull() && targetPort != 0)
     {
         if (m_pTransport->getProtocol() == TransportProtocol::UDP)
@@ -673,12 +914,37 @@ bool LDds::sendMessageThroughTransport(
             auto * udpTransport = dynamic_cast<LUdpTransport *>(m_pTransport.get());
             if (udpTransport != nullptr)
             {
-                return udpTransport->sendMessageTo(message, *targetAddress, targetPort);
+                sent = udpTransport->sendMessageTo(outgoing, *targetAddress, targetPort);
+            }
+            else
+            {
+                sent = m_pTransport->sendMessage(outgoing);
             }
         }
+        else
+        {
+            sent = m_pTransport->sendMessage(outgoing);
+        }
+    }
+    else
+    {
+        sent = m_pTransport->sendMessage(outgoing);
     }
 
-    return m_pTransport->sendMessage(message);
+    if (sent)
+    {
+        m_metrics.sentMessages.fetch_add(1);
+        m_metrics.sentBytes.fetch_add(static_cast<uint64_t>(outgoing.getTotalSize()));
+        emitStructuredLog(
+            "info",
+            "transport",
+            "send",
+            &outgoing,
+            targetAddress,
+            targetPort);
+    }
+
+    return sent;
 }
 
 void LDds::initializeReliableState()
@@ -775,6 +1041,7 @@ void LDds::processReliableOutgoing(const std::chrono::steady_clock::time_point &
             {
                 if (m_reliableMaxResendCount > 0 && entry.resendCount >= m_reliableMaxResendCount)
                 {
+                    m_metrics.estimatedDrops.fetch_add(1);
                     setLastError(
                         "reliable udp drop pending seq=" + std::to_string(it->first) +
                         ", maxResendCount=" + std::to_string(m_reliableMaxResendCount));
@@ -784,6 +1051,7 @@ void LDds::processReliableOutgoing(const std::chrono::steady_clock::time_point &
 
                 entry.lastSendAt = now;
                 ++entry.resendCount;
+                m_metrics.retransmitCount.fetch_add(1);
                 retryMessages.push_back(entry.message);
             }
             ++it;
@@ -801,6 +1069,7 @@ void LDds::processReliableOutgoing(const std::chrono::steady_clock::time_point &
 
     for (const LMessage & pending : retryMessages)
     {
+        emitStructuredLog("info", "reliable", "retransmit", &pending);
         if (!sendMessageThroughTransport(pending))
         {
             setLastError(
@@ -888,6 +1157,7 @@ void LDds::handleReliableControlMessage(
             {
                 it->second.lastSendAt = std::chrono::steady_clock::now();
                 ++it->second.resendCount;
+                m_metrics.retransmitCount.fetch_add(1);
                 nackedMessages.push_back(it->second.message);
             }
         }
@@ -1076,6 +1346,14 @@ void LDds::deliverDataMessage(const LMessage & message)
     const std::string dataType = m_pTypeRegistry->getTypeNameByTopic(topic);
     m_domain.cacheTopicData(static_cast<int>(topic), message.getPayload(), dataType);
     markTopicActivity(topic);
+    const QHostAddress senderAddress = message.getSenderAddress();
+    emitStructuredLog(
+        "info",
+        "dispatch",
+        "deliver",
+        &message,
+        &senderAddress,
+        message.getSenderPort());
 
     std::vector<TopicCallback> callbacks;
     {
@@ -1847,14 +2125,39 @@ void LDds::handleTransportMessage(
 {
     if (message.getDomainId() != static_cast<uint8_t>(m_effectiveDomainId))
     {
+        m_metrics.estimatedDrops.fetch_add(1);
         return;
     }
 
+    LMessage workingMessage = message;
+    workingMessage.setSenderAddress(senderAddress);
+    workingMessage.setSenderPort(senderPort);
+
     try
     {
-        if (isDiscoveryMessage(message))
+        if (!verifyIncomingSecurity(workingMessage))
         {
-            handleDiscoveryMessage(message, senderAddress, senderPort);
+            return;
+        }
+
+        m_metrics.receivedMessages.fetch_add(1);
+        m_metrics.receivedBytes.fetch_add(static_cast<uint64_t>(message.getTotalSize()));
+        emitStructuredLog(
+            "info",
+            "transport",
+            "receive",
+            &workingMessage,
+            &senderAddress,
+            senderPort);
+
+        if (workingMessage.getMessageType() == LMessageType::Data)
+        {
+            updateDropEstimate(workingMessage, senderAddress, senderPort);
+        }
+
+        if (isDiscoveryMessage(workingMessage))
+        {
+            handleDiscoveryMessage(workingMessage, senderAddress, senderPort);
             return;
         }
 
@@ -1866,24 +2169,24 @@ void LDds::handleTransportMessage(
 
         if (!reliableUdpEnabled)
         {
-            if (message.isHeartbeat())
+            if (workingMessage.isHeartbeat())
             {
                 std::lock_guard<std::mutex> lock(m_qosMutex);
                 m_lastHeartbeatReceive = std::chrono::steady_clock::now();
                 return;
             }
 
-            deliverDataMessage(message);
+            deliverDataMessage(workingMessage);
             return;
         }
 
-        if (message.isControlMessage() || message.getTopic() == HEARTBEAT_TOPIC_ID)
+        if (workingMessage.isControlMessage() || workingMessage.getTopic() == HEARTBEAT_TOPIC_ID)
         {
-            handleReliableControlMessage(message, senderAddress, senderPort);
+            handleReliableControlMessage(workingMessage, senderAddress, senderPort);
             return;
         }
 
-        handleReliableDataMessage(message, senderAddress, senderPort);
+        handleReliableDataMessage(workingMessage, senderAddress, senderPort);
     }
     catch (const std::exception & ex)
     {
@@ -1987,9 +2290,11 @@ void LDds::qosThreadFunc()
             processQosHotReload(now);
             processDiscovery(now);
             processReliableOutgoing(now);
+            updateRuntimeGauges();
 
             for (const auto & missed : deadlineMissed)
             {
+                m_metrics.deadlineMissCount.fetch_add(1);
                 setLastError(
                     "deadline missed topic=" + std::to_string(missed.first) +
                     ", elapsedMs=" + std::to_string(missed.second)
@@ -2019,10 +2324,298 @@ void LDds::qosThreadFunc()
     }
 }
 
+LDds::SecurityRuntimeConfig LDds::snapshotSecurityConfig() const
+{
+    std::lock_guard<std::mutex> lock(m_securityMutex);
+    return m_securityConfig;
+}
+
+bool LDds::applyOutgoingSecurity(LMessage & message)
+{
+    const SecurityRuntimeConfig security = snapshotSecurityConfig();
+    if (!security.enabled)
+    {
+        return true;
+    }
+    if (security.psk.empty())
+    {
+        setLastError("security enabled but securityPsk is empty");
+        return false;
+    }
+
+    std::vector<uint8_t> body = message.getPayload();
+    uint8_t flags = 0U;
+    if (security.encryptPayload)
+    {
+        flags |= SECURITY_FLAG_ENCRYPTED;
+        if (!body.empty())
+        {
+            applySymmetricCipher(body, security.psk, message.getSequence());
+        }
+    }
+
+    const uint64_t nonce = message.getSequence();
+    const uint64_t authTag = computeSecurityTag(security.psk, message, flags, nonce, body);
+    std::vector<uint8_t> envelope;
+    envelope.reserve(SECURITY_ENVELOPE_PREFIX_SIZE + body.size());
+    envelope.push_back(SECURITY_ENVELOPE_MAGIC);
+    envelope.push_back(SECURITY_ENVELOPE_VERSION);
+    envelope.push_back(flags);
+    appendU64(envelope, nonce);
+    appendU64(envelope, authTag);
+    envelope.insert(envelope.end(), body.begin(), body.end());
+    message.setPayload(envelope);
+    return true;
+}
+
+bool LDds::verifyIncomingSecurity(LMessage & message)
+{
+    const SecurityRuntimeConfig security = snapshotSecurityConfig();
+    if (!security.enabled)
+    {
+        return true;
+    }
+    if (security.psk.empty())
+    {
+        m_metrics.authRejectedCount.fetch_add(1);
+        setLastError("security enabled but securityPsk is empty");
+        return false;
+    }
+
+    const std::vector<uint8_t> payload = message.getPayload();
+    if (payload.size() < SECURITY_ENVELOPE_PREFIX_SIZE)
+    {
+        m_metrics.authRejectedCount.fetch_add(1);
+        m_metrics.estimatedDrops.fetch_add(1);
+        setLastError("security reject: invalid envelope size");
+        return false;
+    }
+
+    size_t offset = 0;
+    uint8_t magic = 0;
+    uint8_t version = 0;
+    uint8_t flags = 0;
+    uint64_t nonce = 0;
+    uint64_t authTag = 0;
+    if (!readU8(payload, offset, magic) ||
+        !readU8(payload, offset, version) ||
+        !readU8(payload, offset, flags) ||
+        !readU64(payload, offset, nonce) ||
+        !readU64(payload, offset, authTag))
+    {
+        m_metrics.authRejectedCount.fetch_add(1);
+        m_metrics.estimatedDrops.fetch_add(1);
+        setLastError("security reject: envelope decode failed");
+        return false;
+    }
+
+    if (magic != SECURITY_ENVELOPE_MAGIC || version != SECURITY_ENVELOPE_VERSION)
+    {
+        m_metrics.authRejectedCount.fetch_add(1);
+        m_metrics.estimatedDrops.fetch_add(1);
+        setLastError("security reject: envelope magic/version mismatch");
+        return false;
+    }
+
+    const bool encrypted = (flags & SECURITY_FLAG_ENCRYPTED) != 0;
+    if (encrypted != security.encryptPayload)
+    {
+        m_metrics.authRejectedCount.fetch_add(1);
+        m_metrics.estimatedDrops.fetch_add(1);
+        setLastError("security reject: encryption mode mismatch");
+        return false;
+    }
+
+    std::vector<uint8_t> body;
+    if (offset < payload.size())
+    {
+        body.assign(payload.begin() + static_cast<size_t>(offset), payload.end());
+    }
+
+    const uint64_t expectedTag = computeSecurityTag(security.psk, message, flags, nonce, body);
+    if (expectedTag != authTag)
+    {
+        m_metrics.authRejectedCount.fetch_add(1);
+        m_metrics.estimatedDrops.fetch_add(1);
+        setLastError("security reject: auth tag mismatch");
+        return false;
+    }
+
+    if (encrypted && !body.empty())
+    {
+        applySymmetricCipher(body, security.psk, nonce);
+    }
+    message.setPayload(body);
+    return true;
+}
+
+void LDds::updateDropEstimate(
+    const LMessage & message,
+    const QHostAddress & senderAddress,
+    quint16 senderPort)
+{
+    const uint64_t seq = message.getSequence();
+    if (seq == 0)
+    {
+        return;
+    }
+
+    uint32_t writerId = message.getWriterId();
+    if (writerId == 0)
+    {
+        writerId = resolveReliableWriterId(message, senderAddress, senderPort);
+    }
+
+    std::lock_guard<std::mutex> lock(m_metricsMutex);
+    auto it = m_lossEstimateByWriter.find(writerId);
+    if (it == m_lossEstimateByWriter.end())
+    {
+        m_lossEstimateByWriter.emplace(writerId, seq);
+        return;
+    }
+
+    uint64_t & lastSeq = it->second;
+    if (seq > lastSeq + 1)
+    {
+        m_metrics.estimatedDrops.fetch_add(seq - lastSeq - 1);
+        lastSeq = seq;
+        return;
+    }
+    if (seq > lastSeq)
+    {
+        lastSeq = seq;
+    }
+}
+
+void LDds::updateRuntimeGauges()
+{
+    uint64_t queueLength = 0;
+    uint64_t connectionCount = 0;
+    uint64_t queueDropCount = m_metrics.queueDropCount.load();
+
+    if (m_pTransport)
+    {
+        if (auto * tcp = dynamic_cast<LTcpTransport *>(m_pTransport.get()))
+        {
+            queueLength = static_cast<uint64_t>(tcp->getPendingQueueSize());
+            connectionCount = static_cast<uint64_t>(tcp->getConnectionCount());
+            queueDropCount = tcp->getQueueDropCount();
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_reliableMutex);
+        if (m_reliableUdpEnabled)
+        {
+            queueLength = std::max(
+                queueLength,
+                static_cast<uint64_t>(m_reliablePending.size()));
+        }
+    }
+
+    m_metrics.queueLength.store(queueLength);
+    m_metrics.connectionCount.store(connectionCount);
+    m_metrics.queueDropCount.store(queueDropCount);
+}
+
+void LDds::resetRuntimeMetrics() noexcept
+{
+    m_metrics.sentMessages.store(0);
+    m_metrics.receivedMessages.store(0);
+    m_metrics.estimatedDrops.store(0);
+    m_metrics.retransmitCount.store(0);
+    m_metrics.deadlineMissCount.store(0);
+    m_metrics.authRejectedCount.store(0);
+    m_metrics.sentBytes.store(0);
+    m_metrics.receivedBytes.store(0);
+    m_metrics.queueDropCount.store(0);
+    m_metrics.queueLength.store(0);
+    m_metrics.connectionCount.store(0);
+    {
+        std::lock_guard<std::mutex> lock(m_metricsMutex);
+        m_lossEstimateByWriter.clear();
+    }
+}
+
+void LDds::emitStructuredLog(
+    const char * level,
+    const char * module,
+    const std::string & text,
+    const LMessage * message,
+    const QHostAddress * peerAddress,
+    quint16 peerPort)
+{
+    LogCallback callback;
+    bool consoleEnabled = false;
+    {
+        std::lock_guard<std::mutex> lock(m_logMutex);
+        callback = m_logCallback;
+        consoleEnabled = m_structuredLogEnabled;
+    }
+    if (!consoleEnabled && !callback)
+    {
+        return;
+    }
+
+    std::ostringstream line;
+    line << "[ldds][" << (level ? level : "info") << "]"
+         << " module=" << (module ? module : "ldds")
+         << " domain=" << static_cast<uint32_t>(m_effectiveDomainId);
+
+    if (message != nullptr)
+    {
+        line << " topic=" << message->getTopic()
+             << " seq=" << message->getSequence()
+             << " type=" << messageTypeToText(message->getMessageType())
+             << " messageId=" << makeMessageId(*message);
+    }
+    else
+    {
+        line << " topic=0 seq=0 type=None messageId=0-0";
+    }
+
+    if (peerAddress != nullptr && !peerAddress->isNull() && peerPort != 0)
+    {
+        line << " peer=" << peerAddress->toString().toStdString()
+             << ":" << static_cast<uint32_t>(peerPort);
+    }
+    else
+    {
+        line << " peer=-";
+    }
+
+    line << " text=\"" << text << "\"";
+    const std::string output = line.str();
+    if (callback)
+    {
+        callback(output);
+    }
+    if (consoleEnabled)
+    {
+        std::cerr << output << std::endl;
+    }
+}
+
+std::string LDds::makeMessageId(const LMessage & message) const
+{
+    uint32_t writerId = message.getWriterId();
+    if (writerId == 0)
+    {
+        writerId = resolveReliableWriterId(
+            message,
+            message.getSenderAddress(),
+            message.getSenderPort());
+    }
+    return std::to_string(writerId) + "-" + std::to_string(message.getSequence());
+}
+
 void LDds::setLastError(const std::string & message)
 {
-    std::lock_guard<std::mutex> lock(m_errorMutex);
-    m_lastError = message;
+    {
+        std::lock_guard<std::mutex> lock(m_errorMutex);
+        m_lastError = message;
+    }
+    emitStructuredLog("error", "ldds", message);
 }
 
 const char * getVersion() noexcept

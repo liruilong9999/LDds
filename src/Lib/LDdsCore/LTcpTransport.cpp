@@ -406,6 +406,17 @@ bool LTcpTransport::getConnectionStats(quint64 connectionId,
     return true;
 }
 
+size_t LTcpTransport::getPendingQueueSize() const noexcept
+{
+    std::lock_guard<std::mutex> lock(m_sendQueueMutex);
+    return m_sendQueue.size();
+}
+
+uint64_t LTcpTransport::getQueueDropCount() const noexcept
+{
+    return m_dropCount.load();
+}
+
 bool LTcpTransport::initializeServer()
 {
     const TransportConfig config = getConfig();

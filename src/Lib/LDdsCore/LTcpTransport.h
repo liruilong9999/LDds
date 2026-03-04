@@ -87,6 +87,8 @@ public:
      * @brief 查询指定连接的收发字节统计。
      */
     bool getConnectionStats(quint64 connectionId, uint64_t& bytesSent, uint64_t& bytesReceived) const;
+    size_t getPendingQueueSize() const noexcept;
+    uint64_t getQueueDropCount() const noexcept;
 
 private:
     struct TcpConnection;
@@ -202,7 +204,7 @@ private:
     std::thread m_sendThread;
 
     std::deque<SendTask> m_sendQueue;
-    std::mutex m_sendQueueMutex;
+    mutable std::mutex m_sendQueueMutex;
     std::condition_variable m_sendCondition;
 
     std::atomic<bool> m_running;
