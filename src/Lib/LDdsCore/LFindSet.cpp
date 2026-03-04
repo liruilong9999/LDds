@@ -1,112 +1,70 @@
-/**
- * @file LFindSet.cpp
- * @brief LFindSet类实现
- */
-
 #include "LFindSet.h"
+
+#include <utility>
 
 namespace LDdsFramework {
 
 LFindSet::LFindSet() noexcept
-    : m_parent()
-    , m_rank()
-    , m_setCount(0)
+    : m_snapshot()
+    , m_cursor(0)
 {
 }
 
-LFindSet::LFindSet(size_t capacity)
-    : m_parent(capacity)
-    , m_rank(capacity, 0)
-    , m_setCount(capacity)
+LFindSet::LFindSet(std::vector<std::vector<uint8_t>> snapshot)
+    : m_snapshot(std::move(snapshot))
+    , m_cursor(0)
 {
-    for (size_t i = 0; i < capacity; ++i)
+}
+
+LFindSet::LFindSet(const std::deque<std::vector<uint8_t>> & topicHistory)
+    : m_snapshot()
+    , m_cursor(0)
+{
+    m_snapshot.reserve(topicHistory.size());
+    for (auto it = topicHistory.rbegin(); it != topicHistory.rend(); ++it)
     {
-        m_parent[i] = static_cast<ElementId>(i);
+        m_snapshot.push_back(*it);
     }
 }
 
 LFindSet::~LFindSet() noexcept = default;
 
-LFindSet::LFindSet(LFindSet && other) noexcept
-    : m_parent(std::move(other.m_parent))
-    , m_rank(std::move(other.m_rank))
-    , m_setCount(other.m_setCount)
+bool LFindSet::getTopicData(std::vector<uint8_t> & data) const
 {
-    other.m_setCount = 0;
-}
-
-LFindSet & LFindSet::operator=(LFindSet && other) noexcept
-{
-    if (this != &other)
+    if (m_cursor >= m_snapshot.size())
     {
-        m_parent         = std::move(other.m_parent);
-        m_rank           = std::move(other.m_rank);
-        m_setCount       = other.m_setCount;
-        other.m_setCount = 0;
+        return false;
     }
-    return *this;
+
+    data = m_snapshot[m_cursor];
+    return true;
 }
 
-void LFindSet::init(size_t count)
+bool LFindSet::getNextTopicData(std::vector<uint8_t> & data)
 {
-    m_parent.resize(count);
-    m_rank.assign(count, 0);
-    m_setCount = count;
-
-    for (size_t i = 0; i < count; ++i)
+    if (m_cursor >= m_snapshot.size())
     {
-        m_parent[i] = static_cast<ElementId>(i);
+        return false;
     }
+
+    data = m_snapshot[m_cursor];
+    ++m_cursor;
+    return true;
 }
 
-void LFindSet::clear() noexcept
+void LFindSet::reset() noexcept
 {
-    m_parent.clear();
-    m_rank.clear();
-    m_setCount = 0;
+    m_cursor = 0;
 }
 
-ElementId LFindSet::find(ElementId element)
+std::size_t LFindSet::size() const noexcept
 {
-    (void)element;
-    return INVALID_ELEMENT_ID;
+    return m_snapshot.size();
 }
 
-bool LFindSet::unite(ElementId elementA, ElementId elementB)
+bool LFindSet::empty() const noexcept
 {
-    (void)elementA;
-    (void)elementB;
-    return false;
-}
-
-bool LFindSet::isConnected(ElementId elementA, ElementId elementB)
-{
-    (void)elementA;
-    (void)elementB;
-    return false;
-}
-
-size_t LFindSet::getSetCount() const noexcept
-{
-    return m_setCount;
-}
-
-size_t LFindSet::getElementCount() const noexcept
-{
-    return m_parent.size();
-}
-
-bool LFindSet::isValidElement(ElementId element) const noexcept
-{
-    return element < m_parent.size();
-}
-
-void LFindSet::enumerateSet(
-    ElementId                              setId,
-    const std::function<bool(ElementId)> & callback) const
-{
-    (void)setId;
-    (void)callback;
+    return m_snapshot.empty();
 }
 
 } // namespace LDdsFramework

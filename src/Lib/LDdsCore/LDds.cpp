@@ -132,10 +132,8 @@ bool LDds::registerType(
 
 bool LDds::publishTopic(uint32_t topic, const std::vector<uint8_t> & payload)
 {
-    auto cachePayload = std::static_pointer_cast<void>(
-        std::make_shared<std::vector<uint8_t>>(payload)
-    );
-    return publishSerializedTopic(topic, std::vector<uint8_t>(payload), std::move(cachePayload));
+    const std::string typeName = m_pTypeRegistry->getTypeNameByTopic(topic);
+    return publishSerializedTopic(topic, std::vector<uint8_t>(payload), typeName);
 }
 
 bool LDds::publishTopic(const std::string & typeName, const std::shared_ptr<void> & object)
@@ -160,7 +158,7 @@ bool LDds::publishTopic(const std::string & typeName, const std::shared_ptr<void
         return false;
     }
 
-    return publishSerializedTopic(topic, std::move(payload), object);
+    return publishSerializedTopic(topic, std::move(payload), typeName);
 }
 
 void LDds::subscribeTopic(uint32_t topic, TopicCallback callback)
@@ -229,9 +227,9 @@ bool LDds::createTransportFromQos(const LQos & qos, const TransportConfig & tran
 }
 
 bool LDds::publishSerializedTopic(
-    uint32_t               topic,
+    uint32_t                topic,
     std::vector<uint8_t> && payload,
-    std::shared_ptr<void>  localObject
+    const std::string &     dataType
 )
 {
     if (topic == 0)
@@ -255,13 +253,7 @@ bool LDds::publishSerializedTopic(
         return false;
     }
 
-    if (!localObject)
-    {
-        localObject = std::static_pointer_cast<void>(
-            std::make_shared<std::vector<uint8_t>>(std::move(payload))
-        );
-    }
-    m_domain.cacheTopicData(topic, localObject);
+    m_domain.cacheTopicData(static_cast<int>(topic), payload, dataType);
 
     return true;
 }
@@ -287,7 +279,8 @@ void LDds::handleTransportMessage(
         return;
     }
 
-    m_domain.cacheTopicData(topic, object);
+    const std::string dataType = m_pTypeRegistry->getTypeNameByTopic(topic);
+    m_domain.cacheTopicData(static_cast<int>(topic), message.getPayload(), dataType);
 
     std::vector<TopicCallback> callbacks;
     {

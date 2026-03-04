@@ -97,8 +97,7 @@ public:
             return false;
         }
 
-        auto cachedObject = std::static_pointer_cast<void>(std::make_shared<T>(object));
-        return publishSerializedTopic(topic, std::move(payload), std::move(cachedObject));
+        return publishSerializedTopic(topic, std::move(payload), typeName);
     }
 
     template<typename T>
@@ -111,8 +110,8 @@ public:
             return false;
         }
 
-        auto cachedObject = std::static_pointer_cast<void>(std::make_shared<T>(object));
-        return publishSerializedTopic(topic, std::move(payload), std::move(cachedObject));
+        const std::string typeName = m_pTypeRegistry->getTypeNameByTopic(topic);
+        return publishSerializedTopic(topic, std::move(payload), typeName);
     }
 
     void subscribeTopic(uint32_t topic, TopicCallback callback);
@@ -144,7 +143,11 @@ public:
 
 private:
     bool createTransportFromQos(const LQos & qos, const TransportConfig & transportConfig);
-    bool publishSerializedTopic(uint32_t topic, std::vector<uint8_t> && payload, std::shared_ptr<void> localObject);
+    bool publishSerializedTopic(
+        uint32_t                topic,
+        std::vector<uint8_t> && payload,
+        const std::string &     dataType
+    );
     void handleTransportMessage(const LMessage & message, const QHostAddress & senderAddress, quint16 senderPort);
 
     void setLastError(const std::string & message);

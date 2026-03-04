@@ -9,10 +9,12 @@
 #pragma once
 
 #include <cstdint>
-#include <memory>
+#include <deque>
+#include <map>
 #include <mutex>
 #include <string>
-#include <unordered_map>
+#include <vector>
+#include "LFindSet.h"
 #include "LDds_Global.h"
 
 namespace LDdsFramework {
@@ -135,9 +137,19 @@ public:
      */
     size_t getParticipantCount() const noexcept;
 
-    void cacheTopicData(uint32_t topic, const std::shared_ptr<void> & object);
-    std::shared_ptr<void> getTopicData(uint32_t topic) const;
-    bool hasTopicData(uint32_t topic) const;
+    void setHistoryDepth(size_t depth) noexcept;
+    size_t getHistoryDepth() const noexcept;
+
+    void cacheTopicData(
+        int                       topic,
+        const std::vector<uint8_t> & data,
+        const std::string &       dataType = std::string()
+    );
+    std::string getDataTypeByTopic(int topic) const;
+    LFindSet getFindSetByTopic(int topic) const;
+    bool getTopicData(int topic, std::vector<uint8_t> & data) const;
+    bool getNextTopicData(int topic, size_t & cursorFromNewest, std::vector<uint8_t> & data) const;
+    bool hasTopicData(int topic) const;
     void clearTopicCache() noexcept;
 
 private:
@@ -160,8 +172,10 @@ private:
      * @brief 有效性标志
      */
     bool m_valid;
-    std::unordered_map<uint32_t, std::shared_ptr<void>> m_topicCache;
-    mutable std::mutex                                   m_topicCacheMutex;
+    size_t m_historyDepth;
+    std::map<int, std::deque<std::vector<uint8_t>>> m_topicCache;
+    std::map<int, std::string>                       m_topicDataTypes;
+    mutable std::mutex                               m_topicCacheMutex;
 };
 
 } // namespace LDdsFramework

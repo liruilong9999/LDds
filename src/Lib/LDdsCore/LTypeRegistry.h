@@ -140,6 +140,7 @@ public:
 
     std::shared_ptr<void> createByTopic(uint32_t topic) const;
     uint32_t getTopicByTypeName(const std::string & typeName) const;
+    std::string getTypeNameByTopic(uint32_t topic) const;
 
     bool serializeByTopic(uint32_t topic, const void * object, std::vector<uint8_t> & outPayload)
         const;

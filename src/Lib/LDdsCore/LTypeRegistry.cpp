@@ -63,6 +63,17 @@ uint32_t LTypeRegistry::getTopicByTypeName(const std::string & typeName) const
     return it->second;
 }
 
+std::string LTypeRegistry::getTypeNameByTopic(uint32_t topic) const
+{
+    std::shared_lock<std::shared_mutex> lock(m_mutex);
+    const auto                          it = m_entriesByTopic.find(topic);
+    if (it == m_entriesByTopic.end() || !it->second)
+    {
+        return std::string();
+    }
+    return it->second->typeName;
+}
+
 bool LTypeRegistry::serializeByTopic(
     uint32_t               topic,
     const void *           object,
