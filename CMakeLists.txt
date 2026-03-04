@@ -1,58 +1,51 @@
-# 设置CMake最低版本要求
-cmake_minimum_required(VERSION 3.12)
+cmake_minimum_required(VERSION 3.16)
 
-# 设置项目名称
-project(LDds)
+project(LDds VERSION 1.0.0 LANGUAGES C CXX)
 
-# C++标准
-set(CMAKE_CXX_STANDARD 17)  # 设置为 C++17
-set(CMAKE_CXX_STANDARD_REQUIRED ON) 
-set(CMAKE_CXX_EXTENSIONS OFF)  # 不使用编译器特定的扩展
+# 全局构建选项
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-# 使用 UTF-8 编码
-if(MSVC)
-    add_compile_options(/utf-8)  # 强制 VS 使用 UTF-8
-else()
-    add_compile_options(-fexec-charset=UTF-8)  # 对于其他编译器使用 UTF-8
+# 单配置生成器默认构建类型
+if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type" FORCE)
 endif()
 
-# 开启使用文件夹功能，将所有默认目标放入到名为 CMakePredefinedTargets 的文件夹中
-set_property(GLOBAL PROPERTY USE_FOLDERS ON)
-set_property(GLOBAL PROPERTY PREDEFINED_TARGETS_FOLDER "_CMakePredefinedTargets")
-
-# 设置根目录
-set(ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR})
-set(BUILD_DIR ${CMAKE_BINARY_DIR})
-
-# 默认构建类型
-if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE "Debug")
-endif()
-
-# 三方库 
-#add_subdirectory(3rdparty)
-
-# CMake模板路径 
-include(${ROOT_DIR}/cmake/module.cmake)
-include(${ROOT_DIR}/cmake/module_qt.cmake)
-
-# 为多种构建类型设置输出目录
-set(CONFIGURATION_TYPES "Debug" "Release" "MinSizeRel" "RelWithDebInfo")
-
-# 类型后缀
+# 多配置输出后缀
 set(CMAKE_RELEASE_POSTFIX "")
 set(CMAKE_DEBUG_POSTFIX "d")
 set(CMAKE_MINSIZEREL_POSTFIX "")
 set(CMAKE_RELWITHDEBINFO_POSTFIX "")
 
-# 适配不同操作系统
-if(WIN32)
-    # Windows特定设置
-    message(STATUS "Configuring for Windows")
-elseif(UNIX)
-    # Unix/Linux特定设置
-    message(STATUS "Configuring for Unix/Linux")
+# 编译器与平台统一行为
+if(MSVC)
+    add_compile_options(
+        "$<$<COMPILE_LANGUAGE:C,CXX>:/utf-8>"
+        "$<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus>"
+    )
+else()
+    add_compile_options(
+        "$<$<COMPILE_LANGUAGE:CXX>:-Wall>"
+        "$<$<COMPILE_LANGUAGE:CXX>:-Wextra>"
+        "$<$<COMPILE_LANGUAGE:CXX>:-Wpedantic>"
+    )
 endif()
 
-# 添加子目录，子目录下必须有CMakeLists.txt
-add_subdirectory(src) 
+# IDE 分组
+set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+set_property(GLOBAL PROPERTY PREDEFINED_TARGETS_FOLDER "_CMakePredefinedTargets")
+
+# 根路径变量（兼容现有 module.cmake）
+set(ROOT_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+set(BUILD_DIR "${CMAKE_BINARY_DIR}")
+
+message(STATUS "Project: ${PROJECT_NAME} ${PROJECT_VERSION}")
+message(STATUS "System : ${CMAKE_SYSTEM_NAME}")
+message(STATUS "Compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}")
+
+include("${ROOT_DIR}/cmake/module.cmake")
+
+add_subdirectory(src)

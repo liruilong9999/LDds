@@ -1,34 +1,41 @@
-# 设置 qt 目录
-if(CMAKE_CXX_PLATFORM_ID MATCHES "Windows")
-    # 方法一
-    set(Qt5_DIR $ENV{QT_DIR})
-    # 方法二
-    # set(CMAKE_PREFIX_PATH "C:\\Qt\\Qt5.14.2\\5.14.2\\msvc2017_64\\lib\\cmake\\Qt5")
-elseif(CMAKE_CXX_PLATFORM_ID MATCHES "MinGW")
-    set(CMAKE_PREFIX_PATH "C:\\Qt\\Qt5.14.2\\5.14.2\\msvc2017_64\\lib\\cmake\\Qt5")
-elseif(CMAKE_CXX_PLATFORM_ID MATCHES "Linux")
-endif()
+# 仅在使用 Qt 的目标中引入本模块。
 
-# 自动生成
 set(CMAKE_INCLUDE_CURRENT_DIR ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
-# ARGV0 QT 依赖文件
+macro(_ldds_prepare_qt)
+    if(NOT DEFINED LDDS_QT_PACKAGE)
+        if(DEFINED ENV{QT_DIR} AND NOT "$ENV{QT_DIR}" STREQUAL "")
+            list(PREPEND CMAKE_PREFIX_PATH "$ENV{QT_DIR}")
+            list(PREPEND CMAKE_PREFIX_PATH "$ENV{QT_DIR}/lib/cmake")
+        endif()
+
+        find_package(Qt6 QUIET COMPONENTS Core)
+        if(Qt6_FOUND)
+            set(LDDS_QT_PACKAGE Qt6 CACHE INTERNAL "Qt major version used by LDds")
+        else()
+            find_package(Qt5 REQUIRED COMPONENTS Core)
+            set(LDDS_QT_PACKAGE Qt5 CACHE INTERNAL "Qt major version used by LDds")
+        endif()
+
+        message(STATUS "LDds Qt package: ${LDDS_QT_PACKAGE}")
+    endif()
+endmacro()
+
+# ARGV0: Qt 组件列表（如 "Core;Network;Xml"）
 macro(AddQtInc QtLibraryList)
-    # 添加 qt include
+    _ldds_prepare_qt()
     foreach(qt_library ${QtLibraryList})
-        find_package(Qt5 COMPONENTS ${qt_library} REQUIRED)
-        include_directories(${Qt5${qt_library}_INCLUDE_DIRS})
-        include_directories(${Qt5${qt_library}_PRIVATE_INCLUDE_DIRS})
+        find_package(${LDDS_QT_PACKAGE} REQUIRED COMPONENTS ${qt_library})
     endforeach()
 endmacro()
 
 macro(AddQtLib QtLibraryList)
-    # 添加 lib
+    _ldds_prepare_qt()
     foreach(qt_library ${QtLibraryList})
-        link_directories(${QTDIR}/lib)
-        target_link_libraries(${PROJECT_NAME} Qt5::${qt_library})
+        find_package(${LDDS_QT_PACKAGE} REQUIRED COMPONENTS ${qt_library})
+        target_link_libraries(${PROJECT_NAME} PRIVATE ${LDDS_QT_PACKAGE}::${qt_library})
     endforeach()
 endmacro()

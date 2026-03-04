@@ -1,297 +1,186 @@
 # LDds
 
-轻量级 DDS 框架实现，包含传输层、调度层、缓存层、IDL 编译器、类型注册与 QoS 管理。
+轻量级 DDS 风格通信框架，包含传输层、发布订阅调度层、Domain 缓存层、QoS 管理、IDL 解析与代码生成，以及阶段化验证脚本。
 
-## 覆盖检查
+当前发布版本标签：`0.0.1`
 
-当前代码已覆盖你要求的最终系统能力：
+## 1. 主要能力
 
-1. `Transport 层`  
-支持 `UDP/TCP` 两种传输协议，且由 QoS `transportType` 动态切换。
-2. `DDS 调度层`  
-`LDds` 完成初始化、发布、接收、订阅回调分发、Domain 写入与 QoS 线程管理。
-3. `Domain 缓存层`  
-`LDomain` 使用 `std::map<int, std::deque<std::vector<uint8_t>>>` 按 `historyDepth` 做线程安全历史缓存。
-4. `IDL 编译器`  
-`LIdlParser` 支持 `package/struct/extend/include/字段/属性/topic/注释` 并生成 AST；`LIdlGenerator` 生成 C++ 代码。
-5. `类型注册机制`  
-`LTypeRegistry` 提供线程安全 `registerType/createByTopic/getTopicByTypeName` 与序列化反序列化入口。
-6. `QoS 管理`  
-支持 `historyDepth/deadlineMs/reliable(预留)`、心跳消息、超时检测线程、XML 配置加载。
+1. 传输层支持 `UDP/TCP`。
+2. 支持类型注册、主题发布/订阅、回调分发。
+3. 支持 Domain 概念与缓存历史深度控制。
+4. 支持 QoS（可靠性、历史、deadline、domain 等）与 XML 加载。
+5. 内置 IDL 解析器与代码生成工具（`LIdl`）。
+6. 提供阶段化 smoke/stress 脚本与统一测试入口。
 
-## 工程结构
+## 2. 工程结构
 
-1. `src/Lib/LDdsCore`  
-核心库，包含传输、调度、缓存、IDL、QoS、注册中心等实现。
-2. `src/App/LIdl`  
-IDL 命令行工具 `LIdl.exe`。
-3. `src/App/LTransportTest`  
-传输层独立测试工具 `LTransportTest.exe`。
-4. `src/App/Example*`  
-调用示例可执行程序（每个示例单独 `main`）。
-5. `build/stage*_smoke`  
-各阶段烟雾测试工程（stage3/4/7/56/8）。
-6. `qos.xml`  
-QoS 配置文件。
-7. `file1.lidl`、`file2.lidl`  
-IDL 示例输入文件。
+1. `src/Lib/LDdsCore`
+核心库（动态库），包含传输、调度、QoS、IDL、类型系统等。
 
-## App 调用示例（新增）
+2. `src/App`
+可执行程序目录：
+- `LIdl`：IDL 编译工具。
+- `LTransportTest`：传输层测试工具。
+- `Example*`：调用示例程序。
 
-`src/App` 下新增了 4 个独立示例程序（每个示例一个 `main`）：
+3. `src/test`
+单元测试目录：
+- `LDdsCoreUnitTests`：核心库单元测试可执行程序。
 
-1. `ExampleQosInit`：从 `qos.example.xml` 加载 QoS 并初始化/关闭 `LDds`。
-2. `ExampleUdpBytesPubSub`：UDP 下使用 `std::vector<uint8_t>` 做发布订阅。
-3. `ExampleTypedPubSub`：注册自定义 `Pose` 类型并做类型化发布订阅。
-4. `ExampleIdlPipeline`：解析内存 IDL 文本并生成 C++/Python 代码。
+4. `scripts`
+阶段验证脚本与辅助脚本：
+- `run_all_stage_tests.ps1`：统一阶段测试入口。
+- `run_src_unit_tests.ps1`：`src/test` 单元测试入口并生成 Markdown 报告。
+- `run_stage*.ps1`：对应阶段 smoke 验证脚本。
 
-构建：
+5. `cmake`
+工程级 CMake 模块：
+- `module.cmake`：统一 `CreateTarget(...)` 目标创建逻辑。
+- `module_qt.cmake`：Qt 组件查找与链接逻辑（支持 Qt6/Qt5 自动回退）。
+
+## 3. CMake 设计说明
+
+在保留现有目录结构和 `CreateTarget(...)` 用法的前提下，已做跨平台改造：
+
+1. 顶层 `CMakeLists.txt` 统一 C++ 标准、编译选项、输出行为。
+2. `module.cmake` 统一目标创建流程，减少子目录重复 CMake 样板。
+3. `module_qt.cmake` 优先查找 Qt6，找不到自动回退 Qt5。
+4. stage 子工程 CMake 去除硬编码绝对路径，改为相对仓库根目录推导。
+5. stage 子工程按平台设置导入库路径：
+- Windows：`.lib + .dll`
+- Linux：`.so`
+- macOS：`.dylib`
+
+## 4. 环境要求
+
+1. CMake `>= 3.16`
+2. C++17 编译器
+- Windows：Visual Studio/MSVC
+- Linux：GCC 或 Clang
+3. Qt（Qt6 或 Qt5，至少包含 `Core`、`Network`，部分目标需要 `Xml`）
+
+可选：
+
+1. 设置环境变量 `QT_DIR` 指向 Qt 安装根目录或 `lib/cmake` 上级目录。
+2. Windows 运行时将 `bin` 加入 `PATH`。
+3. Linux 运行时设置 `LD_LIBRARY_PATH` 指向 `./bin/lib`。
+
+## 5. 构建方式
+
+### 5.1 Windows（PowerShell）
 
 ```powershell
 cmake -S . -B build
 cmake --build build --config Debug
 ```
 
-运行（Windows PowerShell）：
+### 5.2 Linux（bash）
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build -j
+```
+
+## 6. 运行示例
+
+### 6.1 Windows
 
 ```powershell
-$env:PATH='C:\code\LDds\code\bin;' + $env:PATH
+$env:PATH = "$PWD\bin;$env:PATH"
 .\bin\ExampleQosInit.exe qos.example.xml
 .\bin\ExampleUdpBytesPubSub.exe
 .\bin\ExampleTypedPubSub.exe
 .\bin\ExampleIdlPipeline.exe
 ```
 
-## 核心模块说明
-
-1. `ITransport / LUdpTransport / LTcpTransport`  
-统一传输抽象，具体协议实现基于 Qt Network（`QUdpSocket/QTcpSocket/QTcpServer`）。
-2. `LDds`  
-负责 QoS 生效、Transport 创建、消息发布接收、订阅回调、Domain 缓存、deadline/heartbeat 线程。
-3. `LDomain / LFindSet`  
-维护每个 topic 的历史队列并提供快照遍历（从新到旧，遍历不受新写入影响）。
-4. `LTypeRegistry`  
-维护类型名与 topic 映射，并提供工厂、序列化、反序列化回调。
-5. `LIdlParser / LIdlGenerator`  
-解析 IDL 生成 AST，再输出 `xx_define.h / xx_export.h / xx_topic.h / xx_topic.cpp`。
-6. `LQos`  
-统一管理传输类型、历史深度、deadline、reliable 预留字段，支持 XML 加载与校验。
-
-## 接口调用示例（C++）
-
-```cpp
-#include "LDds.h"
-
-using namespace LDdsFramework;
-
-struct MsgA { int value; };
-
-int main() {
-    LQos qos;
-    qos.transportType = TransportType::UDP; // 或 TCP
-    qos.historyDepth = 8;
-    qos.deadlineMs = 500;
-
-    TransportConfig cfg;
-    cfg.bindAddress = "127.0.0.1";
-    cfg.bindPort = 20001;
-    cfg.remoteAddress = "127.0.0.1";
-    cfg.remotePort = 20002;
-
-    LDds dds;
-    dds.registerType<MsgA>("MsgA", 101);
-    dds.subscribeTopic<MsgA>(101, [](const MsgA& msg) {
-        // 订阅回调
-    });
-
-    if (!dds.initialize(qos, cfg)) {
-        return 1;
-    }
-
-    dds.publishTopicByTopic<MsgA>(101, MsgA{42});
-    dds.shutdown();
-    return 0;
-}
-```
-
-## IDL 命令行
-
-`LIdl` 用法：
+### 6.2 Linux
 
 ```bash
-LIdl.exe [options] <input-files...>
+export LD_LIBRARY_PATH="$PWD/bin/lib:$LD_LIBRARY_PATH"
+./bin/ExampleQosInit qos.example.xml
+./bin/ExampleUdpBytesPubSub
+./bin/ExampleTypedPubSub
+./bin/ExampleIdlPipeline
 ```
 
-常用参数：
+## 7. 测试与验证
 
-1. `-o, --output <dir>` 输出目录
-2. `-l, --language <lang>` 目标语言，默认 `cpp`
-3. `-I, --include <path>` include 搜索路径
-4. `-s, --strict` 严格模式
-5. `-V, --verbose` 详细输出
+### 7.1 src 单元测试（推荐）
 
-### 已实测示例 1：生成 file1/file2 代码
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_src_unit_tests.ps1 -Config Debug
+```
+
+输出：
+
+1. 执行 `LDdsCoreUnitTests`。
+2. 生成报告：`reports/src_unit_test_report.md`。
+
+### 7.2 阶段测试总入口
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_all_stage_tests.ps1 -Config Debug
+```
+
+默认串行执行并汇总：
+
+1. stage3
+2. stage4
+3. stage7
+4. stage56
+5. stage8
+
+可选参数示例：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_all_stage_tests.ps1 -Config Release -SkipStage8
+```
+
+### 7.3 Phase 专项脚本
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_stage1_domain_smoke.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\run_stage2_tcp_reconnect_smoke.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\run_stage10_discovery_smoke.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\run_stage11_phase5_smoke.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\run_stage12_phase6_smoke.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\run_stage13_phase7_smoke.ps1
+```
+
+## 8. IDL 工具使用
+
+`LIdl` 示例：
 
 ```powershell
 .\bin\LIdl.exe -V -o .\build\idl_out file1.lidl file2.lidl
 ```
 
-期望关键输出：
+常用参数：
 
-1. `Processing: file1.lidl`
-2. `Processing: file2.lidl`
-3. `Generated: .\build\idl_out (...)`
+1. `-o, --output <dir>`：输出目录
+2. `-l, --language <lang>`：目标语言（默认 `cpp`）
+3. `-I, --include <path>`：include 路径
+4. `-s, --strict`：严格模式
+5. `-V, --verbose`：详细输出
 
-生成文件示例：
+## 9. 相关文档
 
-1. `build/idl_out/file1_define.h`
-2. `build/idl_out/file1_export.h`
-3. `build/idl_out/file1_topic.h`
-4. `build/idl_out/file1_topic.cpp`
-5. `build/idl_out/file2_define.h`
-6. `build/idl_out/file2_export.h`
-7. `build/idl_out/file2_topic.h`
-8. `build/idl_out/file2_topic.cpp`
+1. [Domain 规则说明](docs/phase1_domain_rules.md)
+2. [TCP 重连设计说明](docs/phase2_tcp_reconnect.md)
+3. [阶段验收清单](docs/phase_definition_of_done_checklist.md)
+4. [任务派单模板](docs/codex_task_order_template.md)
 
-## 测试与验证
+## 10. 常见问题
 
-以下命令在当前仓库已执行通过：
+1. Qt 找不到
+- 设置 `QT_DIR`，或将 Qt 安装路径加入 `CMAKE_PREFIX_PATH`。
 
-### 已实测示例 2：阶段 3（UDP/TCP 可切换 + 多 topic）
+2. Windows 运行时找不到 DLL
+- 将仓库 `bin` 目录加入 `PATH`。
 
-```powershell
-$env:PATH='C:\code\LDds\code\bin;' + $env:PATH
-.\build\stage3_smoke\out\Debug\stage3_smoke.exe
-```
+3. Linux 运行时找不到 `libLDdsCore*.so`
+- 设置 `LD_LIBRARY_PATH=$PWD/bin/lib:$LD_LIBRARY_PATH`。
 
-期望关键输出：
-
-1. `udp=ok tcp=ok`
-
-### 已实测示例 3：阶段 4（缓存历史）
-
-```powershell
-$env:PATH='C:\code\LDds\code\bin;' + $env:PATH
-.\build\stage4_smoke\out\Debug\stage4_smoke.exe
-```
-
-期望关键输出：
-
-1. `stage4=ok`
-
-### 已实测示例 4：阶段 7（deadline + 心跳 + QoS XML）
-
-```powershell
-$env:PATH='C:\code\LDds\code\bin;' + $env:PATH
-.\build\stage7_smoke\out\Debug\stage7_smoke.exe
-```
-
-期望关键输出：
-
-1. `stage7=ok`
-
-### 已实测示例 5：阶段 5/6（IDL 解析 + 代码生成 + 注册 +序列化）
-
-```powershell
-$env:PATH='C:\code\LDds\code\bin;' + $env:PATH
-.\build\stage56_smoke\out\Debug\stage56_smoke.exe
-```
-
-期望关键输出：
-
-1. `stage56=ok`
-
-### 已实测示例 6：阶段 8（集成压测）
-
-UDP：
-
-```powershell
-$env:PATH='C:\code\LDds\code\bin;' + $env:PATH
-powershell -ExecutionPolicy Bypass -File .\build\stage8_stress\run_stage8.ps1 -Protocol udp -DurationSec 20 -Topics 8 -PublisherThreads 4 -SubscribersPerTopic 4 -RatePerThread 150
-```
-
-TCP：
-
-```powershell
-$env:PATH='C:\code\LDds\code\bin;' + $env:PATH
-powershell -ExecutionPolicy Bypass -File .\build\stage8_stress\run_stage8.ps1 -Protocol tcp -DurationSec 20 -Topics 8 -PublisherThreads 4 -SubscribersPerTopic 4 -RatePerThread 150
-```
-
-期望关键输出：
-
-1. `senderExit=0 receiverExit=0`
-2. `totalFail=0`
-3. 各 topic 回调/发送统计均为非零
-
-## 可扩展性与工业化演进建议
-
-该实现已经具备“可扩展、支持多进程、支持跨主机”的基础形态。继续演进到工业级 DDS，建议优先补齐：
-
-1. 可靠传输完整语义（重传、ACK/NACK、窗口、乱序重组）
-2. 更细粒度 QoS（durability、ownership、liveliness、resource limits）
-3. 安全能力（鉴权、加密、访问控制）
-4. 观测与运维（指标、链路追踪、告警、动态配置热更新）
-5. 完整互操作与兼容性测试矩阵（多平台、多版本、异常网络场景）
-
-## Phase 0 基线治理补充
-
-### 统一测试入口（stage3/4/7/56/8）
-可使用统一脚本串行运行全部阶段测试，并输出统一格式：`PASS/FAIL + stage name + duration`。
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run_all_stage_tests.ps1
-```
-
-可选参数：
-1. `-Config Debug|Release|RelWithDebInfo|MinSizeRel`（默认 `Debug`）
-2. `-SkipStage8`（跳过 stage8 压测）
-
-脚本日志目录：`build/stage_runs`。
-
-### QoS 示例配置
-新增示例文件：`qos.example.xml`。
-
-推荐流程：
-1. 从示例复制一份作为本地配置。
-2. 按环境修改 `transport/historyDepth/deadlineMs/reliable`。
-3. 通过 `loadFromXmlFile` 直接加载。
-
-```powershell
-Copy-Item .\qos.example.xml .\qos.local.xml
-```
-
-说明：仓库中的 `qos.xml` 保持现有行为不变，`qos.example.xml` 仅作为开发配置模板。
-
-### 统一日志前缀约定
-阶段测试关键输出统一为带前缀格式，便于脚本和 CI 正则抓取：
-1. `stage3`：`[stage3] ...`
-2. `stage4`：`[stage4] ...`
-3. `stage7`：`[stage7] ...`
-4. `stage56`：`[stage56] ...`
-5. `stage8`：`[stage8][SENDER] ...` / `...[RECEIVER] ...`
-## Phase 1 Domain 验证入口
-
-1. 运行 Domain 阶段冒烟：
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run_stage1_domain_smoke.ps1
-```
-2. 成功标志：`[stage1_domain] domain_stage=ok`
-3. 规则文档：`docs/phase1_domain_rules.md`
-
-## 统一测试脚本新增参数
-
-`run_all_stage_tests.ps1` 新增：
-1. `-SkipBuild`：跳过 stage 可执行程序重编译
-2. `-StopOnCrash`：遇到崩溃退出码（负值）时立即停止
-
-默认行为为“先重编译再执行”，用于避免 DLL/EXE ABI 不一致导致的崩溃。
-4. 若环境存在应用控制策略导致 `stage8_stress.exe` 无法启动，可先使用 `-SkipStage8` 完成其余阶段回归。
-
-## Phase 2 TCP 验证入口
-
-1. 运行 TCP 连接池/重连/队列策略冒烟：
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run_stage2_tcp_reconnect_smoke.ps1
-```
-2. 成功标志：`[stage2_tcp] result=ok`
-3. 设计说明：`docs/phase2_tcp_reconnect.md`
+4. stage 独立工程链接失败
+- 先构建根工程生成 `bin/lib` 中的 `LDdsCore` 库，再运行 stage 脚本。

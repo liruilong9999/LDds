@@ -7,9 +7,7 @@ get_filename_component(ProjectName ${AbsolutePathProject} NAME)
 
 # Qt 库
 set(QT_LIBRARY_LIST "Core" "Network" "Xml")
- 
-# 预编译
-add_compile_definitions(LDDSCORE_LIBRARY)
 
 # 创建项目 
-CreateTarget(${ProjectName} "Dll") 
+CreateTarget(${ProjectName} "Dll")
+target_compile_definitions(${ProjectName} PRIVATE LDDSCORE_LIBRARY)
