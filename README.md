@@ -27,12 +27,40 @@
 IDL 命令行工具 `LIdl.exe`。
 3. `src/App/LTransportTest`  
 传输层独立测试工具 `LTransportTest.exe`。
-4. `build/stage*_smoke`  
+4. `src/App/Example*`  
+调用示例可执行程序（每个示例单独 `main`）。
+5. `build/stage*_smoke`  
 各阶段烟雾测试工程（stage3/4/7/56/8）。
-5. `qos.xml`  
+6. `qos.xml`  
 QoS 配置文件。
-6. `file1.lidl`、`file2.lidl`  
+7. `file1.lidl`、`file2.lidl`  
 IDL 示例输入文件。
+
+## App 调用示例（新增）
+
+`src/App` 下新增了 4 个独立示例程序（每个示例一个 `main`）：
+
+1. `ExampleQosInit`：从 `qos.example.xml` 加载 QoS 并初始化/关闭 `LDds`。
+2. `ExampleUdpBytesPubSub`：UDP 下使用 `std::vector<uint8_t>` 做发布订阅。
+3. `ExampleTypedPubSub`：注册自定义 `Pose` 类型并做类型化发布订阅。
+4. `ExampleIdlPipeline`：解析内存 IDL 文本并生成 C++/Python 代码。
+
+构建：
+
+```powershell
+cmake -S . -B build
+cmake --build build --config Debug
+```
+
+运行（Windows PowerShell）：
+
+```powershell
+$env:PATH='C:\code\LDds\code\bin;' + $env:PATH
+.\bin\ExampleQosInit.exe qos.example.xml
+.\bin\ExampleUdpBytesPubSub.exe
+.\bin\ExampleTypedPubSub.exe
+.\bin\ExampleIdlPipeline.exe
+```
 
 ## 核心模块说明
 
