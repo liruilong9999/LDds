@@ -452,16 +452,55 @@
 5. `验收命令`：构建命令 + 测试命令 + 预期关键输出。
 6. `交付物`：代码、测试、文档变更列表。
 
+推荐模板（可直接复制）：
+
+```markdown
+## 任务单
+1. Step 编号：`Step x.y`
+2. 目标：一句话描述任务目标。
+3. 修改文件：
+   `path/to/file_a`
+   `path/to/file_b`
+4. 约束：
+   - 是否允许 breaking change：`是/否`
+   - 兼容性要求：`例如保持旧配置可运行`
+   - 崩溃处理策略：`失败立即停止并输出日志 / 可重试 N 次后停止`
+5. 验收命令：
+   - 构建命令：`cmake --build build --config Debug`
+   - 测试命令：`powershell -ExecutionPolicy Bypass -File .\scripts\xxx.ps1`
+   - 预期关键输出：`[stageX] result=ok`
+6. 交付物：
+   - 代码变更列表
+   - 测试与日志摘要
+   - 文档/迁移说明
+```
+
 示例：
-1. Step：`1.3`
-2. 目标：消息头加入 domainId 并实现接收过滤
+
+```markdown
+## 任务单
+1. Step 编号：`Step 1.3`
+2. 目标：消息头加入 domainId 并实现接收过滤。
 3. 修改文件：
    `src/Lib/LDdsCore/LMessage.h`
    `src/Lib/LDdsCore/LMessage.cpp`
    `src/Lib/LDdsCore/LDds.cpp`
-4. 约束：默认行为兼容旧配置；协议变化需注明
-5. 验收命令：运行新增 domain smoke + 现有 stage3/4/7/56
-6. 交付物：PR + 迁移说明 + 测试日志
+4. 约束：
+   - 是否允许 breaking change：`否`
+   - 兼容性要求：默认行为兼容旧配置；协议变化需注明。
+   - 崩溃处理策略：出现崩溃立即停止、保留崩溃前后日志并给出复现场景。
+5. 验收命令：
+   - 构建命令：`cmake --build build --config Debug`
+   - 测试命令：`powershell -ExecutionPolicy Bypass -File .\scripts\run_stage1_domain_smoke.ps1`
+   - 回归命令：`powershell -ExecutionPolicy Bypass -File .\scripts\run_all_stage_tests.ps1`
+   - 预期关键输出：`[stage1_domain] domain_stage=ok`，`[stage-run] PASS all stages`
+6. 交付物：
+   - PR + 迁移说明 + 测试日志
+```
+
+补充说明：
+1. 详细模板见：`docs/codex_task_order_template.md`。
+2. 若任务涉及协议变更，务必在任务单中单列“兼容策略与回滚方式”。
 
 ---
 
@@ -490,4 +529,3 @@
    `Step 1.1 + Step 1.2 + Step 0.x`，随后合并 `Step 1.3/1.4`。
 2. 高耦合 Step（例如 3.1-3.3）建议串行，由同一 Codex 连续完成以减少冲突。
 3. 所有新增配置都建议提供默认值，确保旧工程可直接运行。
-
