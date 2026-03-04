@@ -6,12 +6,16 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -31,6 +35,7 @@ class LDDSCORE_EXPORT LDds final
 {
 public:
     using TopicCallback = std::function<void(uint32_t topic, const std::shared_ptr<void> & object)>;
+    using DeadlineMissedCallback = std::function<void(uint32_t topic, uint64_t elapsedMs)>;
 
     LDds();
     ~LDds();
@@ -40,6 +45,11 @@ public:
 
     bool initialize(const LQos & qos);
     bool initialize(const LQos & qos, const TransportConfig & transportConfig, DomainId domainId = DEFAULT_DOMAIN_ID);
+    bool initializeFromQosXml(
+        const std::string & qosXmlPath,
+        const TransportConfig & transportConfig = TransportConfig(),
+        DomainId domainId = DEFAULT_DOMAIN_ID
+    );
     void shutdown() noexcept;
 
     bool isRunning() const noexcept;
@@ -132,6 +142,7 @@ public:
     }
 
     void unsubscribeTopic(uint32_t topic);
+    void setDeadlineMissedCallback(DeadlineMissedCallback callback);
 
     const LQos & getQos() const noexcept;
     TransportProtocol getTransportProtocol() const noexcept;
@@ -149,6 +160,10 @@ private:
         const std::string &     dataType
     );
     void handleTransportMessage(const LMessage & message, const QHostAddress & senderAddress, quint16 senderPort);
+    void markTopicActivity(uint32_t topic);
+    void startQosThread();
+    void stopQosThread() noexcept;
+    void qosThreadFunc();
 
     void setLastError(const std::string & message);
 
@@ -160,12 +175,24 @@ private:
 
     std::atomic<bool>     m_running;
     std::atomic<uint64_t> m_sequence;
+    std::atomic<bool>     m_qosThreadRunning;
 
     std::unordered_map<uint32_t, std::vector<TopicCallback>> m_subscribers;
     mutable std::mutex                                        m_subscribersMutex;
+    DeadlineMissedCallback                                    m_deadlineMissedCallback;
 
     mutable std::mutex m_errorMutex;
     std::string        m_lastError;
+
+    std::thread              m_qosThread;
+    std::condition_variable  m_qosCondition;
+    mutable std::mutex       m_qosMutex;
+    std::unordered_map<uint32_t, std::chrono::steady_clock::time_point> m_lastTopicActivity;
+    std::unordered_set<uint32_t> m_deadlineMissedTopics;
+    std::chrono::steady_clock::time_point m_lastHeartbeatSend;
+    std::chrono::steady_clock::time_point m_lastHeartbeatReceive;
+    std::chrono::milliseconds m_deadlineCheckInterval;
+    std::chrono::milliseconds m_heartbeatInterval;
 };
 
 const char * getVersion() noexcept;

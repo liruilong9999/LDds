@@ -1,5 +1,7 @@
 #include "LMessage.h"
 
+#include <cstring>
+
 namespace LDdsFramework {
 
 void LMessageHeader::serialize(LByteBuffer& buffer) const
@@ -45,18 +47,38 @@ bool LMessageHeader::deserialize(const uint8_t* data, size_t size)
 }
 
 LMessage::LMessage()
-    : m_topic(0)
+    : m_messageType(LMessageType::Data)
+    , m_topic(0)
     , m_sequence(0)
     , m_senderPort(0)
 {
 }
 
 LMessage::LMessage(uint32_t topic, uint64_t sequence, const std::vector<uint8_t>& payload)
-    : m_topic(topic)
+    : m_messageType(topic == HEARTBEAT_TOPIC_ID ? LMessageType::Heartbeat : LMessageType::Data)
+    , m_topic(topic)
     , m_sequence(sequence)
     , m_payload(payload)
     , m_senderPort(0)
 {
+}
+
+LMessage::LMessage(
+    uint32_t                    topic,
+    uint64_t                    sequence,
+    const std::vector<uint8_t>& payload,
+    LMessageType                messageType)
+    : m_messageType(messageType)
+    , m_topic(topic)
+    , m_sequence(sequence)
+    , m_payload(payload)
+    , m_senderPort(0)
+{
+    if (m_messageType == LMessageType::Heartbeat) {
+        m_topic = HEARTBEAT_TOPIC_ID;
+    } else if (m_topic == HEARTBEAT_TOPIC_ID) {
+        m_messageType = LMessageType::Heartbeat;
+    }
 }
 
 uint32_t LMessage::getTopic() const noexcept
@@ -67,6 +89,11 @@ uint32_t LMessage::getTopic() const noexcept
 void LMessage::setTopic(uint32_t topic) noexcept
 {
     m_topic = topic;
+    if (topic == HEARTBEAT_TOPIC_ID) {
+        m_messageType = LMessageType::Heartbeat;
+    } else if (m_messageType == LMessageType::Heartbeat) {
+        m_messageType = LMessageType::Data;
+    }
 }
 
 uint64_t LMessage::getSequence() const noexcept
@@ -77,6 +104,31 @@ uint64_t LMessage::getSequence() const noexcept
 void LMessage::setSequence(uint64_t sequence) noexcept
 {
     m_sequence = sequence;
+}
+
+LMessageType LMessage::getMessageType() const noexcept
+{
+    return m_messageType;
+}
+
+void LMessage::setMessageType(LMessageType type) noexcept
+{
+    m_messageType = type;
+    if (type == LMessageType::Heartbeat) {
+        m_topic = HEARTBEAT_TOPIC_ID;
+    }
+}
+
+bool LMessage::isHeartbeat() const noexcept
+{
+    return m_messageType == LMessageType::Heartbeat || m_topic == HEARTBEAT_TOPIC_ID;
+}
+
+LMessage LMessage::makeHeartbeat(uint64_t sequence, uint64_t timestampMs)
+{
+    std::vector<uint8_t> payload(sizeof(uint64_t), 0);
+    std::memcpy(payload.data(), &timestampMs, sizeof(uint64_t));
+    return LMessage(HEARTBEAT_TOPIC_ID, sequence, payload, LMessageType::Heartbeat);
 }
 
 const std::vector<uint8_t>& LMessage::getPayload() const noexcept
@@ -157,6 +209,7 @@ bool LMessage::deserialize(const uint8_t* data, size_t size)
     // 设置字段
     m_topic = header.topic;
     m_sequence = header.sequence;
+    m_messageType = (m_topic == HEARTBEAT_TOPIC_ID) ? LMessageType::Heartbeat : LMessageType::Data;
 
     // 复制payload
     if (header.payloadSize > 0) {
@@ -176,6 +229,7 @@ bool LMessage::deserialize(const LByteBuffer& buffer)
 
 void LMessage::clear() noexcept
 {
+    m_messageType = LMessageType::Data;
     m_topic = 0;
     m_sequence = 0;
     m_payload.clear();

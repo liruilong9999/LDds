@@ -10,6 +10,14 @@
 
 namespace LDdsFramework {
 
+enum class LMessageType : uint8_t
+{
+    Data = 0,
+    Heartbeat = 1
+};
+
+constexpr uint32_t HEARTBEAT_TOPIC_ID = 0;
+
 /**
  * @brief 消息头部结构
  *
@@ -72,6 +80,12 @@ public:
      * @param payload 负载数据
      */
     LMessage(uint32_t topic, uint64_t sequence, const std::vector<uint8_t>& payload);
+    LMessage(
+        uint32_t topic,
+        uint64_t sequence,
+        const std::vector<uint8_t>& payload,
+        LMessageType messageType
+    );
 
     /**
      * @brief 析构函数
@@ -101,6 +115,10 @@ public:
      * @param sequence 序列号
      */
     void setSequence(uint64_t sequence) noexcept;
+    LMessageType getMessageType() const noexcept;
+    void setMessageType(LMessageType type) noexcept;
+    bool isHeartbeat() const noexcept;
+    static LMessage makeHeartbeat(uint64_t sequence, uint64_t timestampMs = 0);
 
     /**
      * @brief 获取payload
@@ -199,6 +217,7 @@ public:
     bool isValid() const noexcept;
 
 private:
+    LMessageType m_messageType;
     uint32_t m_topic;                ///< 主题ID
     uint64_t m_sequence;             ///< 序列号
     std::vector<uint8_t> m_payload;  ///< payload数据

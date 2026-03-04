@@ -265,7 +265,19 @@ public:
     bool isCompatibleWith(const LQos & other, std::string & errorMessage) const;
     void merge(const LQos & other);
 
+    // Stage-7 simplified QoS knobs:
+    // - historyDepth: cache depth for each topic, minimum 1
+    // - deadlineMs: deadline timeout in milliseconds, <=0 means disabled
+    // - reliable: reserved flag for future reliable delivery behavior
+    int32_t historyDepth;
+    int32_t deadlineMs;
+    bool    reliable;
+
     TransportType transportType;
+
+    // QoS XML config (preferred): parse and apply known fields.
+    bool loadFromXmlFile(const std::string & filePath, std::string * errorMessage = nullptr);
+    bool loadFromXmlString(const std::string & xmlText, std::string * errorMessage = nullptr);
 
 private:
     ReliabilityQosPolicy m_reliability;
