@@ -3,7 +3,11 @@
 # ARGV1: Type: 生成目标类型（可执行文件、库文件等）
 # ARGV2: BuildDir 可以不填
 macro(CreateTarget ProjectName Type)
-   
+    # 如果 QT_LIBRARY_LIST 不为空，则引入 Qt 的相关配置宏
+    if(NOT("${QT_LIBRARY_LIST}" STREQUAL ""))
+        include(${ROOT_DIR}/cmake/module_qt.cmake)  # 包含自定义的 Qt 配置文件
+    endif()
+
 
     # 打印项目名称到控制台
     message(STATUS ${ProjectName})
@@ -13,7 +17,9 @@ macro(CreateTarget ProjectName Type)
     # 定义当前路径，并将当前目录下的所有源码文件分类到相应的变量中
     set(CURRENT_PATH ${CMAKE_CURRENT_SOURCE_DIR})  # 当前源码目录
     set(HEADER_FILES "")       # 头文件（.h, .hpp）
-    set(SOURCE_FILES "")       # 源文件（.c, .cpp） 
+    set(SOURCE_FILES "")       # 源文件（.c, .cpp）
+    set(FORM_FILES "")         # Qt 界面文件（.ui）
+    set(RESOURCE_FILES "")     # Qt 资源文件（.qrc）
     
     # 递归查找指定类型的文件并存储到相应变量中
     file(GLOB_RECURSE HEADER_FILES "${CURRENT_PATH}/*.h" "${CURRENT_PATH}/*.hpp")
@@ -76,13 +82,15 @@ macro(CreateTarget ProjectName Type)
         # 生成可执行文件（带窗口）
         add_executable(${PROJECT_NAME}
             WIN32                              # Windows 下使用 Win32 子系统
-            ${HEADER_FILES} ${SOURCE_FILES})    # 源码文件 
+            ${HEADER_FILES} ${SOURCE_FILES}    # 源码文件
+            ${FORM_FILES} ${RESOURCE_FILES})   # Qt 的 UI 和资源文件
         set_target_properties(${PROJECT_NAME} PROPERTIES
             VS_DEBUGGER_WORKING_DIRECTORY "$(OutDir)")  # 设置 Visual Studio 的调试工作目录
     elseif(${Type} STREQUAL "ExeCMD")
         # 生成命令行可执行文件（无窗口）
         add_executable(${PROJECT_NAME}
-            ${HEADER_FILES} ${SOURCE_FILES})    # 源码文件 
+            ${HEADER_FILES} ${SOURCE_FILES}    # 源码文件
+            ${FORM_FILES} ${RESOURCE_FILES})   # Qt 的 UI 和资源文件
         set_target_properties(${PROJECT_NAME} PROPERTIES
             VS_DEBUGGER_WORKING_DIRECTORY "$(OutDir)")  # 设置 Visual Studio 的调试工作目录
     else()
@@ -95,7 +103,16 @@ macro(CreateTarget ProjectName Type)
             add_library(${PROJECT_NAME} SHARED ${HEADER_FILES} ${SOURCE_FILES} ${FORM_FILES} ${RESOURCE_FILES})
 		endif()
     endif()
- 
+
+    # 如果 Qt 库不为空，则链接 Qt 的相关库文件
+    if(NOT("${QT_LIBRARY_LIST}" STREQUAL ""))
+        AddQtLib("${QT_LIBRARY_LIST}")
+    endif()
+	# 如果 Qt 库不为空，则添加 Qt 相关的包含路径
+    if(NOT("${QT_LIBRARY_LIST}" STREQUAL ""))
+        AddQtInc("${QT_LIBRARY_LIST}" "${FORM_FILES}" "${RESOURCE_FILES}")  # 添加 Qt 的包含路径
+    endif()
+
     # 添加自定义库到目标文件的链接库中
 	foreach(_lib ${SELF_LIBRARY_LIST})
 		include_directories(${CURRENT_PATH}/../)

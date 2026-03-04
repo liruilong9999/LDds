@@ -8,4 +8,4 @@ get_filename_component(ProjectName ${AbsolutePathProject} NAME)
 # 链接库
 set(SELF_LIBRARY_LIST "LDdsCore")
 # 创建项目
-CreateTarget(${ProjectName} "ExeCMD")   
+CreateTarget(${ProjectName} "ExeCMD")    
