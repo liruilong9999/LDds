@@ -18,6 +18,12 @@ TransportConfig::TransportConfig()
     , sendBufferSize(65536)
     , maxConnections(100)
     , reuseAddress(true)
+    , autoReconnect(true)
+    , reconnectMinMs(200)
+    , reconnectMaxMs(5000)
+    , reconnectMultiplier(2.0)
+    , maxPendingMessages(4096)
+    , sendQueueOverflowPolicy(SendQueueOverflowPolicy::DropOldest)
 {
 }
 

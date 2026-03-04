@@ -21,6 +21,12 @@ enum class TransportProtocol {
     TCP
 };
 
+enum class SendQueueOverflowPolicy {
+    DropOldest = 0,
+    DropNewest = 1,
+    FailFast = 2
+};
+
 /**
  * @brief 传输层配置。
  */
@@ -37,6 +43,12 @@ struct LDDSCORE_EXPORT TransportConfig {
     int sendBufferSize;
     int maxConnections;
     bool reuseAddress;
+    bool autoReconnect;
+    int reconnectMinMs;
+    int reconnectMaxMs;
+    double reconnectMultiplier;
+    int maxPendingMessages;
+    SendQueueOverflowPolicy sendQueueOverflowPolicy;
 
     TransportConfig();
 };

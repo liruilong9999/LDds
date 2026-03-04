@@ -258,3 +258,12 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_stage1_domain_smoke.ps1
 
 默认行为为“先重编译再执行”，用于避免 DLL/EXE ABI 不一致导致的崩溃。
 4. 若环境存在应用控制策略导致 `stage8_stress.exe` 无法启动，可先使用 `-SkipStage8` 完成其余阶段回归。
+
+## Phase 2 TCP 验证入口
+
+1. 运行 TCP 连接池/重连/队列策略冒烟：
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\run_stage2_tcp_reconnect_smoke.ps1
+```
+2. 成功标志：`[stage2_tcp] result=ok`
+3. 设计说明：`docs/phase2_tcp_reconnect.md`

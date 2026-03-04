@@ -3,11 +3,14 @@
 
 #include <QAbstractSocket>
 #include <QByteArray>
+#include <QDebug>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QThread>
 
 #include <chrono>
+#include <cmath>
+#include <limits>
 #include <thread>
 
 namespace LDdsFramework {
@@ -72,11 +75,13 @@ struct LTcpTransport::TcpConnection {
         quint64 connectionIdValue,
         const std::shared_ptr<QTcpSocket>& socketValue,
         const QHostAddress& remoteAddressValue,
-        quint16 remotePortValue)
+        quint16 remotePortValue,
+        const QString& endpointKeyValue)
         : connectionId(connectionIdValue)
         , socket(socketValue)
         , remoteAddress(remoteAddressValue)
         , remotePort(remotePortValue)
+        , endpointKey(endpointKeyValue)
         , receiveBuffer()
         , bytesSent(0)
         , bytesReceived(0)
@@ -89,6 +94,7 @@ struct LTcpTransport::TcpConnection {
     std::shared_ptr<QTcpSocket> socket;
     QHostAddress remoteAddress;
     quint16 remotePort;
+    QString endpointKey;
     std::vector<uint8_t> receiveBuffer;
     std::atomic<uint64_t> bytesSent;
     std::atomic<uint64_t> bytesReceived;
@@ -101,6 +107,8 @@ LTcpTransport::LTcpTransport()
     , m_serverMutex()
     , m_connections()
     , m_connectionsMutex()
+    , m_endpointStates()
+    , m_endpointMutex()
     , m_acceptThread()
     , m_receiveThread()
     , m_sendThread()
@@ -111,6 +119,8 @@ LTcpTransport::LTcpTransport()
     , m_sendThreadRunning(false)
     , m_nextConnectionId(1)
     , m_networkThread(nullptr)
+    , m_dropCount(0)
+    , m_lastQueueDropLogAt(std::chrono::steady_clock::time_point::min())
 {
 }
 
@@ -142,6 +152,15 @@ bool LTcpTransport::start()
 
     m_receiveThread = std::thread(&LTcpTransport::receiveThreadFunc, this);
 
+    QHostAddress remoteAddress;
+    quint16 remotePort = 0;
+    if (resolveRemoteFromConfig(remoteAddress, remotePort)) {
+        ensureEndpointEntry(remoteAddress, remotePort);
+        if (shouldAutoReconnect()) {
+            (void)connectToHost(remoteAddress, remotePort);
+        }
+    }
+
     setState(TransportState::Running);
     return true;
 }
@@ -169,8 +188,11 @@ void LTcpTransport::stop()
 
     {
         std::lock_guard<std::mutex> lock(m_sendQueueMutex);
-        std::queue<SendTask> empty;
-        std::swap(m_sendQueue, empty);
+        m_sendQueue.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock(m_endpointMutex);
+        m_endpointStates.clear();
     }
 
     setState(TransportState::Stopped);
@@ -195,9 +217,20 @@ bool LTcpTransport::sendMessage(const LMessage& message)
         return false;
     }
 
+    ConnectionPtr connection = findConnectionById(onlyConnectionId);
+    if (!connection) {
+        setError(QStringLiteral("No active single TCP connection"));
+        return false;
+    }
+
     const LByteBuffer serialized = message.serialize();
     std::vector<uint8_t> bytes(serialized.data(), serialized.data() + serialized.size());
-    return enqueueSendData(std::move(bytes), onlyConnectionId);
+    return enqueueSendData(
+        std::move(bytes),
+        onlyConnectionId,
+        connection->remoteAddress,
+        connection->remotePort,
+        false);
 }
 
 bool LTcpTransport::sendMessageTo(const LMessage& message,
@@ -214,22 +247,22 @@ bool LTcpTransport::sendMessageTo(const LMessage& message,
         return false;
     }
 
+    ensureEndpointEntry(targetAddress, targetPort);
+
     ConnectionPtr connection = findConnection(targetAddress, targetPort);
     if (!connection) {
-        if (!connectToHost(targetAddress, targetPort)) {
-            setError(QStringLiteral("Failed to connect to target endpoint"));
+        const bool connectedNow = connectToHost(targetAddress, targetPort);
+        if (!connectedNow && !shouldAutoReconnect()) {
+            setError(QStringLiteral("Failed to connect target endpoint and autoReconnect is disabled"));
             return false;
         }
         connection = findConnection(targetAddress, targetPort);
-        if (!connection) {
-            setError(QStringLiteral("Connection not available after connect"));
-            return false;
-        }
     }
 
     const LByteBuffer serialized = message.serialize();
     std::vector<uint8_t> bytes(serialized.data(), serialized.data() + serialized.size());
-    return enqueueSendData(std::move(bytes), connection->connectionId);
+    const quint64 connectionId = connection ? connection->connectionId : 0;
+    return enqueueSendData(std::move(bytes), connectionId, targetAddress, targetPort, false);
 }
 
 bool LTcpTransport::broadcastMessage(const LMessage& message, quint16 broadcastPort)
@@ -243,7 +276,7 @@ bool LTcpTransport::broadcastMessage(const LMessage& message, quint16 broadcastP
 
     const LByteBuffer serialized = message.serialize();
     std::vector<uint8_t> bytes(serialized.data(), serialized.data() + serialized.size());
-    return enqueueSendData(std::move(bytes), 0);
+    return enqueueSendData(std::move(bytes), 0, QHostAddress(), 0, true);
 }
 
 bool LTcpTransport::connectToHost(const QHostAddress& address, quint16 port)
@@ -251,6 +284,38 @@ bool LTcpTransport::connectToHost(const QHostAddress& address, quint16 port)
     if (address.isNull() || port == 0) {
         setError(QStringLiteral("Invalid remote endpoint"));
         return false;
+    }
+
+    const QString endpointKey = makeEndpointKey(address, port);
+    const auto now = std::chrono::steady_clock::now();
+
+    quint64 existingConnectionId = 0;
+    {
+        std::lock_guard<std::mutex> lock(m_endpointMutex);
+        EndpointStateEntry& entry = m_endpointStates[endpointKey];
+        entry.address = address;
+        entry.port = port;
+        if (entry.reconnectDelayMs <= 0) {
+            entry.reconnectDelayMs = getReconnectMinMs();
+        }
+
+        if (entry.state == EndpointConnectionState::Connected && entry.connectionId != 0) {
+            existingConnectionId = entry.connectionId;
+        } else if (entry.state == EndpointConnectionState::Connecting) {
+            return true;
+        } else if (entry.state == EndpointConnectionState::Backoff && now < entry.nextRetryAt) {
+            return false;
+        }
+
+        entry.state = EndpointConnectionState::Connecting;
+        entry.lastStateChangeAt = now;
+    }
+
+    if (existingConnectionId != 0) {
+        ConnectionPtr existing = findConnectionById(existingConnectionId);
+        if (existing && existing->connected.load()) {
+            return true;
+        }
     }
 
     auto socket = std::make_shared<QTcpSocket>();
@@ -271,7 +336,9 @@ bool LTcpTransport::connectToHost(const QHostAddress& address, quint16 port)
 
     socket->connectToHost(address, port);
     if (!socket->waitForConnected(3000)) {
-        setError(QStringLiteral("TCP connect failed: %1").arg(socket->errorString()));
+        const QString errorText = QStringLiteral("TCP connect failed: %1").arg(socket->errorString());
+        markEndpointFailure(endpointKey, errorText);
+        setError(errorText);
         return false;
     }
 
@@ -284,19 +351,23 @@ bool LTcpTransport::connectToHost(const QHostAddress& address, quint16 port)
         socket->moveToThread(networkThread);
     }
 
-    if (addConnection(socket, address, port) == 0) {
+    const quint64 connectionId = addConnection(socket, address, port, endpointKey);
+    if (connectionId == 0) {
         socket->disconnectFromHost();
         socket->close();
-        setError(QStringLiteral("Connection limit reached"));
+        const QString errorText = QStringLiteral("Connection limit reached");
+        markEndpointFailure(endpointKey, errorText);
+        setError(errorText);
         return false;
     }
 
+    markEndpointConnected(endpointKey, connectionId);
     return true;
 }
 
 void LTcpTransport::disconnect(quint64 connectionId)
 {
-    removeConnection(connectionId);
+    removeConnection(connectionId, QStringLiteral("manual disconnect"), false);
 }
 
 void LTcpTransport::disconnectAll()
@@ -311,7 +382,7 @@ void LTcpTransport::disconnectAll()
     }
 
     for (const quint64 id : allIds) {
-        removeConnection(id);
+        removeConnection(id, QStringLiteral("disconnect all"), false);
     }
 }
 
@@ -325,14 +396,13 @@ bool LTcpTransport::getConnectionStats(quint64 connectionId,
                                        uint64_t& bytesSent,
                                        uint64_t& bytesReceived) const
 {
-    std::lock_guard<std::mutex> lock(m_connectionsMutex);
-    const auto it = m_connections.find(connectionId);
-    if (it == m_connections.end()) {
+    ConnectionPtr connection = findConnectionById(connectionId);
+    if (!connection) {
         return false;
     }
 
-    bytesSent = it->second->bytesSent.load();
-    bytesReceived = it->second->bytesReceived.load();
+    bytesSent = connection->bytesSent.load();
+    bytesReceived = connection->bytesReceived.load();
     return true;
 }
 
@@ -426,41 +496,16 @@ void LTcpTransport::receiveThreadFunc()
                     );
                 }
 
-                if (addConnection(socket, socket->peerAddress(), socket->peerPort()) == 0) {
+                const QString endpointKey = makeEndpointKey(socket->peerAddress(), socket->peerPort());
+                if (addConnection(socket, socket->peerAddress(), socket->peerPort(), endpointKey) == 0) {
                     socket->disconnectFromHost();
                     socket->close();
                 }
             }
         }
 
-        {
-            std::queue<SendTask> localQueue;
-            {
-                std::lock_guard<std::mutex> lock(m_sendQueueMutex);
-                std::swap(localQueue, m_sendQueue);
-            }
-
-            while (!localQueue.empty()) {
-                SendTask task = std::move(localQueue.front());
-                localQueue.pop();
-
-                if (task.connectionId == 0) {
-                    std::vector<quint64> ids;
-                    {
-                        std::lock_guard<std::mutex> lock(m_connectionsMutex);
-                        ids.reserve(m_connections.size());
-                        for (const auto& pair : m_connections) {
-                            ids.push_back(pair.first);
-                        }
-                    }
-                    for (const quint64 id : ids) {
-                        sendToConnection(id, task.data);
-                    }
-                } else {
-                    sendToConnection(task.connectionId, task.data);
-                }
-            }
-        }
+        processReconnects();
+        processSendQueue();
 
         std::vector<SocketEntry> entries;
         {
@@ -505,7 +550,7 @@ void LTcpTransport::receiveThreadFunc()
             }
 
             if (shouldRemove) {
-                removeConnection(entry.connectionId);
+                removeConnection(entry.connectionId, QStringLiteral("socket state changed"), true);
                 continue;
             }
 
@@ -537,52 +582,34 @@ void LTcpTransport::receiveThreadFunc()
 
 void LTcpTransport::sendThreadFunc()
 {
-    while (m_sendThreadRunning.load() || !m_sendQueue.empty()) {
-        SendTask task;
-        {
-            std::unique_lock<std::mutex> lock(m_sendQueueMutex);
-            m_sendCondition.wait(lock, [this] {
-                return !m_sendThreadRunning.load() || !m_sendQueue.empty();
-            });
-
-            if (m_sendQueue.empty()) {
-                continue;
-            }
-
-            task = std::move(m_sendQueue.front());
-            m_sendQueue.pop();
-        }
-
-        if (task.connectionId == 0) {
-            std::vector<quint64> ids;
-            {
-                std::lock_guard<std::mutex> lock(m_connectionsMutex);
-                ids.reserve(m_connections.size());
-                for (const auto& pair : m_connections) {
-                    ids.push_back(pair.first);
-                }
-            }
-            for (const quint64 id : ids) {
-                sendToConnection(id, task.data);
-            }
-        } else {
-            sendToConnection(task.connectionId, task.data);
-        }
-    }
+    // Send processing is handled in receiveThreadFunc() to keep socket operations
+    // on a single thread.
 }
 
-bool LTcpTransport::enqueueSendData(std::vector<uint8_t>&& data, quint64 connectionId)
+bool LTcpTransport::enqueueSendData(
+    std::vector<uint8_t>&& data,
+    quint64 connectionId,
+    const QHostAddress& targetAddress,
+    quint16 targetPort,
+    bool broadcast)
 {
-    if (!m_sendThreadRunning.load()) {
+    if (!m_running.load()) {
         return false;
     }
 
-    {
-        std::lock_guard<std::mutex> lock(m_sendQueueMutex);
-        m_sendQueue.push(SendTask {std::move(data), connectionId});
+    SendTask task;
+    task.data = std::move(data);
+    task.connectionId = connectionId;
+    task.targetAddress = targetAddress;
+    task.targetPort = targetPort;
+    task.broadcast = broadcast;
+    task.notBefore = std::chrono::steady_clock::now();
+    task.attempts = 0;
+    if (!broadcast && !targetAddress.isNull() && targetPort != 0) {
+        task.endpointKey = makeEndpointKey(targetAddress, targetPort);
     }
-    m_sendCondition.notify_one();
-    return true;
+
+    return pushTaskWithPolicy(std::move(task), false);
 }
 
 bool LTcpTransport::sendToConnection(quint64 connectionId, const std::vector<uint8_t>& data)
@@ -616,14 +643,15 @@ bool LTcpTransport::sendToConnection(quint64 connectionId, const std::vector<uin
     }
 
     if (shouldRemove) {
-        removeConnection(connectionId);
+        removeConnection(connectionId, QStringLiteral("write failed"), true);
     }
     return false;
 }
 
 quint64 LTcpTransport::addConnection(const std::shared_ptr<QTcpSocket>& socket,
                                      const QHostAddress& remoteAddress,
-                                     quint16 remotePort)
+                                     quint16 remotePort,
+                                     const QString& endpointKey)
 {
     if (!socket) {
         return 0;
@@ -634,26 +662,40 @@ quint64 LTcpTransport::addConnection(const std::shared_ptr<QTcpSocket>& socket,
         ? static_cast<size_t>(config.maxConnections)
         : static_cast<size_t>(1);
 
-    const quint64 connectionId = m_nextConnectionId.fetch_add(1);
-    const ConnectionPtr connection = std::make_shared<TcpConnection>(
-        connectionId,
-        socket,
-        remoteAddress,
-        remotePort
-    );
-
     {
         std::lock_guard<std::mutex> lock(m_connectionsMutex);
+        if (!endpointKey.isEmpty()) {
+            for (const auto& pair : m_connections) {
+                const ConnectionPtr& existing = pair.second;
+                if (existing->endpointKey == endpointKey && existing->connected.load()) {
+                    return existing->connectionId;
+                }
+            }
+        }
         if (m_connections.size() >= maxConnections) {
             return 0;
         }
-        m_connections.emplace(connectionId, connection);
-    }
 
-    return connectionId;
+        const quint64 connectionId = m_nextConnectionId.fetch_add(1);
+        const ConnectionPtr connection = std::make_shared<TcpConnection>(
+            connectionId,
+            socket,
+            remoteAddress,
+            remotePort,
+            endpointKey
+        );
+        m_connections.emplace(connectionId, connection);
+        if (!endpointKey.isEmpty()) {
+            markEndpointConnected(endpointKey, connectionId);
+        }
+        return connectionId;
+    }
 }
 
-void LTcpTransport::removeConnection(quint64 connectionId)
+void LTcpTransport::removeConnection(
+    quint64 connectionId,
+    const QString& reason,
+    bool scheduleReconnect)
 {
     ConnectionPtr connection;
     {
@@ -666,12 +708,31 @@ void LTcpTransport::removeConnection(quint64 connectionId)
         m_connections.erase(it);
     }
 
-    std::lock_guard<std::mutex> connLock(connection->mutex);
-    connection->connected.store(false);
-    if (connection->socket) {
-        connection->socket->disconnectFromHost();
-        connection->socket->close();
-        connection->socket.reset();
+    {
+        std::lock_guard<std::mutex> connLock(connection->mutex);
+        connection->connected.store(false);
+        if (connection->socket) {
+            connection->socket->disconnectFromHost();
+            connection->socket->close();
+            connection->socket.reset();
+        }
+    }
+
+    if (connection->endpointKey.isEmpty()) {
+        return;
+    }
+
+    if (scheduleReconnect) {
+        markEndpointFailure(connection->endpointKey, reason);
+    } else {
+        std::lock_guard<std::mutex> lock(m_endpointMutex);
+        const auto endpointIt = m_endpointStates.find(connection->endpointKey);
+        if (endpointIt != m_endpointStates.end()) {
+            endpointIt->second.connectionId = 0;
+            endpointIt->second.state = EndpointConnectionState::Disconnected;
+            endpointIt->second.lastStateChangeAt = std::chrono::steady_clock::now();
+            endpointIt->second.lastError = reason;
+        }
     }
 }
 
@@ -687,6 +748,16 @@ LTcpTransport::ConnectionPtr LTcpTransport::findConnection(const QHostAddress& a
         }
     }
     return nullptr;
+}
+
+LTcpTransport::ConnectionPtr LTcpTransport::findConnectionById(quint64 connectionId) const
+{
+    std::lock_guard<std::mutex> lock(m_connectionsMutex);
+    const auto it = m_connections.find(connectionId);
+    if (it == m_connections.end()) {
+        return nullptr;
+    }
+    return it->second;
 }
 
 bool LTcpTransport::resolveRemoteFromConfig(QHostAddress& targetAddress, quint16& targetPort) const
@@ -754,6 +825,328 @@ void LTcpTransport::processConnectionBuffer(const ConnectionPtr& connection)
     for (const LMessage& message : readyMessages) {
         notifyReceiveCallback(message, message.getSenderAddress(), message.getSenderPort());
     }
+}
+
+void LTcpTransport::processSendQueue()
+{
+    std::vector<SendTask> tasks;
+    {
+        std::lock_guard<std::mutex> lock(m_sendQueueMutex);
+        if (m_sendQueue.empty()) {
+            return;
+        }
+        tasks.reserve(m_sendQueue.size());
+        while (!m_sendQueue.empty()) {
+            tasks.push_back(std::move(m_sendQueue.front()));
+            m_sendQueue.pop_front();
+        }
+    }
+
+    for (SendTask& task : tasks) {
+        if (!m_running.load()) {
+            break;
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (task.notBefore > now) {
+            (void)pushTaskWithPolicy(std::move(task), false);
+            continue;
+        }
+
+        if (task.broadcast) {
+            std::vector<quint64> ids;
+            {
+                std::lock_guard<std::mutex> lock(m_connectionsMutex);
+                ids.reserve(m_connections.size());
+                for (const auto& pair : m_connections) {
+                    ids.push_back(pair.first);
+                }
+            }
+
+            for (const quint64 id : ids) {
+                (void)sendToConnection(id, task.data);
+            }
+            continue;
+        }
+
+        quint64 connectionId = task.connectionId;
+        if (connectionId != 0) {
+            ConnectionPtr active = findConnectionById(connectionId);
+            if (!active || !active->connected.load()) {
+                connectionId = 0;
+            }
+        }
+
+        if (connectionId == 0 && !task.endpointKey.isEmpty()) {
+            (void)getEndpointConnectionId(task.endpointKey, connectionId);
+        }
+
+        if (connectionId == 0 && !task.targetAddress.isNull() && task.targetPort != 0) {
+            const QString endpointKey = makeEndpointKey(task.targetAddress, task.targetPort);
+            if (canAttemptConnectNow(endpointKey)) {
+                (void)connectToHost(task.targetAddress, task.targetPort);
+                (void)getEndpointConnectionId(endpointKey, connectionId);
+            }
+        }
+
+        if (connectionId == 0) {
+            if (shouldAutoReconnect()) {
+                task.connectionId = 0;
+                task.attempts += 1;
+                task.notBefore = std::chrono::steady_clock::now() +
+                                 std::chrono::milliseconds(getReconnectMinMs());
+                (void)pushTaskWithPolicy(std::move(task), false);
+            } else {
+                setError(QStringLiteral("No connection available for queued TCP message"));
+            }
+            continue;
+        }
+
+        if (sendToConnection(connectionId, task.data)) {
+            continue;
+        }
+
+        if (shouldAutoReconnect()) {
+            task.connectionId = 0;
+            task.attempts += 1;
+            task.notBefore = std::chrono::steady_clock::now() +
+                             std::chrono::milliseconds(getReconnectMinMs());
+            (void)pushTaskWithPolicy(std::move(task), false);
+            continue;
+        }
+
+        setError(QStringLiteral("send queued TCP message failed"));
+    }
+}
+
+void LTcpTransport::processReconnects()
+{
+    if (!shouldAutoReconnect()) {
+        return;
+    }
+
+    std::vector<std::pair<QHostAddress, quint16>> candidates;
+    const auto now = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> lock(m_endpointMutex);
+        for (auto& pair : m_endpointStates) {
+            EndpointStateEntry& entry = pair.second;
+            if (entry.address.isNull() || entry.port == 0) {
+                continue;
+            }
+            if (entry.state == EndpointConnectionState::Connected ||
+                entry.state == EndpointConnectionState::Connecting) {
+                continue;
+            }
+            if (entry.state == EndpointConnectionState::Backoff && now < entry.nextRetryAt) {
+                continue;
+            }
+            entry.state = EndpointConnectionState::Disconnected;
+            candidates.push_back({entry.address, entry.port});
+        }
+    }
+
+    for (const auto& candidate : candidates) {
+        (void)connectToHost(candidate.first, candidate.second);
+    }
+}
+
+QString LTcpTransport::makeEndpointKey(const QHostAddress& address, quint16 port)
+{
+    return QStringLiteral("%1:%2").arg(address.toString()).arg(port);
+}
+
+bool LTcpTransport::shouldAutoReconnect() const
+{
+    return getConfig().autoReconnect;
+}
+
+int LTcpTransport::getReconnectMinMs() const
+{
+    return std::max(20, getConfig().reconnectMinMs);
+}
+
+int LTcpTransport::getReconnectMaxMs() const
+{
+    const int minMs = getReconnectMinMs();
+    return std::max(minMs, getConfig().reconnectMaxMs);
+}
+
+double LTcpTransport::getReconnectMultiplier() const
+{
+    const double multiplier = getConfig().reconnectMultiplier;
+    return multiplier < 1.0 ? 1.0 : multiplier;
+}
+
+int LTcpTransport::computeNextBackoffMs(int currentDelayMs) const
+{
+    const int minMs = getReconnectMinMs();
+    const int maxMs = getReconnectMaxMs();
+    if (currentDelayMs <= 0) {
+        return minMs;
+    }
+
+    const double scaled = std::ceil(static_cast<double>(currentDelayMs) * getReconnectMultiplier());
+    if (scaled >= static_cast<double>(maxMs)) {
+        return maxMs;
+    }
+    return std::max(minMs, static_cast<int>(scaled));
+}
+
+void LTcpTransport::ensureEndpointEntry(const QHostAddress& address, quint16 port)
+{
+    if (address.isNull() || port == 0) {
+        return;
+    }
+
+    const QString endpointKey = makeEndpointKey(address, port);
+    std::lock_guard<std::mutex> lock(m_endpointMutex);
+    EndpointStateEntry& entry = m_endpointStates[endpointKey];
+    entry.address = address;
+    entry.port = port;
+    if (entry.reconnectDelayMs <= 0) {
+        entry.reconnectDelayMs = getReconnectMinMs();
+    }
+}
+
+void LTcpTransport::markEndpointConnected(const QString& endpointKey, quint64 connectionId)
+{
+    if (endpointKey.isEmpty()) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(m_endpointMutex);
+    auto it = m_endpointStates.find(endpointKey);
+    if (it == m_endpointStates.end()) {
+        return;
+    }
+
+    EndpointStateEntry& entry = it->second;
+    entry.state = EndpointConnectionState::Connected;
+    entry.connectionId = connectionId;
+    entry.reconnectDelayMs = getReconnectMinMs();
+    entry.nextRetryAt = std::chrono::steady_clock::now();
+    entry.lastStateChangeAt = entry.nextRetryAt;
+    entry.failureCount = 0;
+    entry.lastError.clear();
+}
+
+void LTcpTransport::markEndpointFailure(const QString& endpointKey, const QString& error)
+{
+    if (endpointKey.isEmpty()) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(m_endpointMutex);
+    auto it = m_endpointStates.find(endpointKey);
+    if (it == m_endpointStates.end()) {
+        return;
+    }
+
+    EndpointStateEntry& entry = it->second;
+    entry.connectionId = 0;
+    entry.lastError = error;
+    entry.failureCount += 1;
+    entry.lastStateChangeAt = std::chrono::steady_clock::now();
+
+    if (!shouldAutoReconnect()) {
+        entry.state = EndpointConnectionState::Disconnected;
+        entry.nextRetryAt = entry.lastStateChangeAt;
+        return;
+    }
+
+    entry.reconnectDelayMs = computeNextBackoffMs(entry.reconnectDelayMs);
+    entry.state = EndpointConnectionState::Backoff;
+    entry.nextRetryAt = entry.lastStateChangeAt + std::chrono::milliseconds(entry.reconnectDelayMs);
+}
+
+bool LTcpTransport::getEndpointConnectionId(const QString& endpointKey, quint64& connectionId) const
+{
+    if (endpointKey.isEmpty()) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(m_endpointMutex);
+    const auto it = m_endpointStates.find(endpointKey);
+    if (it == m_endpointStates.end()) {
+        return false;
+    }
+    if (it->second.state != EndpointConnectionState::Connected || it->second.connectionId == 0) {
+        return false;
+    }
+
+    connectionId = it->second.connectionId;
+    return true;
+}
+
+bool LTcpTransport::canAttemptConnectNow(const QString& endpointKey) const
+{
+    if (endpointKey.isEmpty()) {
+        return false;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    std::lock_guard<std::mutex> lock(m_endpointMutex);
+    const auto it = m_endpointStates.find(endpointKey);
+    if (it == m_endpointStates.end()) {
+        return false;
+    }
+
+    if (it->second.state == EndpointConnectionState::Connected ||
+        it->second.state == EndpointConnectionState::Connecting) {
+        return false;
+    }
+    if (it->second.state == EndpointConnectionState::Backoff && now < it->second.nextRetryAt) {
+        return false;
+    }
+
+    return true;
+}
+
+bool LTcpTransport::pushTaskWithPolicy(SendTask&& task, bool front)
+{
+    const TransportConfig config = getConfig();
+    const int maxPending = (config.maxPendingMessages > 0)
+        ? config.maxPendingMessages
+        : std::numeric_limits<int>::max();
+
+    std::lock_guard<std::mutex> lock(m_sendQueueMutex);
+    if (static_cast<int>(m_sendQueue.size()) >= maxPending) {
+        const uint64_t dropped = m_dropCount.fetch_add(1) + 1;
+        if (config.sendQueueOverflowPolicy == SendQueueOverflowPolicy::DropOldest) {
+            m_sendQueue.pop_front();
+            logQueueDrop("drop_oldest", m_sendQueue.size(), dropped);
+        } else if (config.sendQueueOverflowPolicy == SendQueueOverflowPolicy::DropNewest) {
+            logQueueDrop("drop_newest", m_sendQueue.size(), dropped);
+            return false;
+        } else {
+            setError(QStringLiteral("send queue overflow (fail-fast)"));
+            logQueueDrop("fail_fast", m_sendQueue.size(), dropped);
+            return false;
+        }
+    }
+
+    if (front) {
+        m_sendQueue.push_front(std::move(task));
+    } else {
+        m_sendQueue.push_back(std::move(task));
+    }
+    return true;
+}
+
+void LTcpTransport::logQueueDrop(const char* reason, size_t queueSize, uint64_t dropCount) const
+{
+    const auto now = std::chrono::steady_clock::now();
+    if (m_lastQueueDropLogAt != std::chrono::steady_clock::time_point::min() &&
+        (now - m_lastQueueDropLogAt) < std::chrono::milliseconds(200)) {
+        return;
+    }
+    m_lastQueueDropLogAt = now;
+
+    qWarning() << "[tcp] send queue overflow"
+               << "reason=" << reason
+               << "queueSize=" << static_cast<qulonglong>(queueSize)
+               << "dropCount=" << static_cast<qulonglong>(dropCount);
 }
 
 } // namespace LDdsFramework
