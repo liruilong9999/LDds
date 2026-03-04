@@ -15,6 +15,7 @@ LQos::LQos() noexcept
     , m_history()
     , m_resourceLimits()
     , m_userData()
+    , transportType(TransportType::UDP)
 {
 }
 
@@ -37,6 +38,17 @@ void LQos::resetToDefaults() noexcept
     m_history        = HistoryQosPolicy();
     m_resourceLimits = ResourceLimitsQosPolicy();
     m_userData       = UserDataQosPolicy();
+    transportType    = TransportType::UDP;
+}
+
+void LQos::setTransportType(TransportType type) noexcept
+{
+    transportType = type;
+}
+
+TransportType LQos::getTransportType() const noexcept
+{
+    return transportType;
 }
 
 void LQos::setReliability(const ReliabilityQosPolicy & policy) noexcept
@@ -111,20 +123,29 @@ const UserDataQosPolicy & LQos::getUserData() const noexcept
 
 bool LQos::validate(std::string & errorMessage) const
 {
-    (void)errorMessage;
+    if (transportType != TransportType::UDP && transportType != TransportType::TCP)
+    {
+        errorMessage = "invalid transportType";
+        return false;
+    }
+    errorMessage.clear();
     return true;
 }
 
 bool LQos::isCompatibleWith(const LQos & other, std::string & errorMessage) const
 {
-    (void)other;
-    (void)errorMessage;
+    if (transportType != other.transportType)
+    {
+        errorMessage = "transportType mismatch";
+        return false;
+    }
+    errorMessage.clear();
     return true;
 }
 
 void LQos::merge(const LQos & other)
 {
-    (void)other;
+    transportType = other.transportType;
 }
 
 } // namespace LDdsFramework
