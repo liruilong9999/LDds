@@ -3,7 +3,8 @@
  * @brief Domain 历史缓存快照遍历器。
  */
 
-#pragma once
+#ifndef LDDSFRAMEWORK_LFINDSET_H_
+#define LDDSFRAMEWORK_LFINDSET_H_
 
 #include <cstddef>
 #include <deque>
@@ -81,3 +82,5 @@ private:
 };
 
 } // namespace LDdsFramework
+
+#endif // LDDSFRAMEWORK_LFINDSET_H_

@@ -3,7 +3,8 @@
  * @brief DDS Domain 与历史缓存管理接口。
  */
 
-#pragma once
+#ifndef LDDSFRAMEWORK_LDOMAIN_H_
+#define LDDSFRAMEWORK_LDOMAIN_H_
 
 #include <cstdint>
 #include <deque>
@@ -179,3 +180,5 @@ private:
 };
 
 } // namespace LDdsFramework
+
+#endif // LDDSFRAMEWORK_LDOMAIN_H_

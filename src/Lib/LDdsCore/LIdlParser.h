@@ -1,4 +1,5 @@
-﻿#pragma once
+﻿#ifndef LDDSFRAMEWORK_LIDLPARSER_H_
+#define LDDSFRAMEWORK_LIDLPARSER_H_
 
 #include <cstdint>
 #include <functional>
@@ -269,3 +270,5 @@ private:
 };
 
 } // namespace LDdsFramework
+
+#endif // LDDSFRAMEWORK_LIDLPARSER_H_

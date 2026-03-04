@@ -2,8 +2,8 @@
  * @file LQos.h
  * @brief QoS policies
  */
-
-#pragma once
+#ifndef LDDSFRAMEWORK_LQOS_H_
+#define LDDSFRAMEWORK_LQOS_H_
 
 #include <chrono>
 #include <cstdint>
@@ -338,3 +338,5 @@ private:
 };
 
 } // namespace LDdsFramework
+
+#endif // LDDSFRAMEWORK_LQOS_H_

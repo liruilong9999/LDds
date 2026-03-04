@@ -1,4 +1,5 @@
-﻿#pragma once
+﻿#ifndef LDDSFRAMEWORK_LIDLGENERATOR_H_
+#define LDDSFRAMEWORK_LIDLGENERATOR_H_
 
 #include <cstdint>
 #include <functional>
@@ -135,3 +136,5 @@ private:
 };
 
 } // namespace LDdsFramework
+
+#endif // LDDSFRAMEWORK_LIDLGENERATOR_H_

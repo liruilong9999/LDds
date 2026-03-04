@@ -3,7 +3,8 @@
  * @brief LDds public headers
  */
 
-#pragma once
+#ifndef LDDSFRAMEWORK_LDDS_H_
+#define LDDSFRAMEWORK_LDDS_H_
 
 #include <atomic>
 #include <chrono>
@@ -396,3 +397,5 @@ void shutdown() noexcept;
 bool isInitialized() noexcept;
 
 } // namespace LDdsFramework
+
+#endif // LDDSFRAMEWORK_LDDS_H_

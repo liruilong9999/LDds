@@ -1,4 +1,5 @@
-#pragma once
+#ifndef LDDSFRAMEWORK_SQLITEDURABILITYSTORE_H_
+#define LDDSFRAMEWORK_SQLITEDURABILITYSTORE_H_
 
 #include <cstdint>
 #include <chrono>
@@ -477,3 +478,5 @@ private:
 };
 
 } // namespace LDdsFramework
+
+#endif // LDDSFRAMEWORK_SQLITEDURABILITYSTORE_H_
