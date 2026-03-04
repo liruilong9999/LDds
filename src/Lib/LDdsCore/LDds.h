@@ -69,7 +69,12 @@ public:
     template<typename T>
     bool registerType(const std::string & typeName, uint32_t topic)
     {
-        return m_pTypeRegistry->registerType<T>(typeName, topic);
+        const bool ok = m_pTypeRegistry->registerType<T>(typeName, topic);
+        if (ok)
+        {
+            rememberKnownTopic(topic);
+        }
+        return ok;
     }
 
     template<typename T, typename Serializer, typename Deserializer>
@@ -80,12 +85,17 @@ public:
         Deserializer && deserializer
     )
     {
-        return m_pTypeRegistry->registerType<T>(
+        const bool ok = m_pTypeRegistry->registerType<T>(
             typeName,
             topic,
             std::forward<Serializer>(serializer),
             std::forward<Deserializer>(deserializer)
         );
+        if (ok)
+        {
+            rememberKnownTopic(topic);
+        }
+        return ok;
     }
 
     bool publishTopic(uint32_t topic, const std::vector<uint8_t> & payload);
@@ -154,6 +164,26 @@ public:
     std::string getLastError() const;
 
 private:
+    struct DiscoveryAnnounce
+    {
+        uint8_t version;
+        uint32_t nodeId;
+        uint8_t domainId;
+        quint16 endpointPort;
+        uint32_t capabilities;
+        std::vector<uint32_t> topics;
+    };
+
+    struct DiscoveryPeerInfo
+    {
+        QHostAddress address;
+        quint16 endpointPort;
+        std::chrono::steady_clock::time_point lastSeen;
+        std::vector<uint32_t> topics;
+        uint32_t capabilities;
+        bool online;
+    };
+
     struct ReliablePendingEntry
     {
         LMessage message;
@@ -184,6 +214,21 @@ private:
         const QHostAddress & senderAddress,
         quint16 senderPort);
     void deliverDataMessage(const LMessage & message);
+    bool isDiscoveryMessage(const LMessage & message) const noexcept;
+    bool encodeDiscoveryAnnounce(std::vector<uint8_t> & payload) const;
+    bool decodeDiscoveryAnnounce(
+        const LMessage & message,
+        DiscoveryAnnounce & announce) const;
+    void handleDiscoveryMessage(
+        const LMessage & message,
+        const QHostAddress & senderAddress,
+        quint16 senderPort);
+    void initializeDiscoveryState(const TransportConfig & transportConfig);
+    void clearDiscoveryState() noexcept;
+    void processDiscovery(const std::chrono::steady_clock::time_point & now);
+    std::vector<std::pair<QHostAddress, quint16>> snapshotDiscoveryTargets(uint32_t topic) const;
+    void rememberKnownTopic(uint32_t topic);
+    std::vector<uint32_t> snapshotKnownTopics() const;
     uint32_t resolveReliableWriterId(
         const LMessage & message,
         const QHostAddress & senderAddress,
@@ -239,6 +284,20 @@ private:
     std::map<uint64_t, ReliablePendingEntry> m_reliablePending;
     std::unordered_map<uint32_t, ReliableReceiveState> m_reliableReceivers;
     mutable std::mutex m_reliableMutex;
+
+    bool m_discoveryEnabled;
+    bool m_discoveryUseMulticast;
+    uint32_t m_discoveryNodeId;
+    quint16 m_discoveryPort;
+    std::chrono::milliseconds m_discoveryInterval;
+    std::chrono::milliseconds m_peerTtl;
+    std::chrono::steady_clock::time_point m_lastDiscoverySend;
+    QHostAddress m_discoveryMulticastGroup;
+    std::unordered_map<uint32_t, DiscoveryPeerInfo> m_discoveryPeers;
+    mutable std::mutex m_discoveryMutex;
+
+    std::unordered_set<uint32_t> m_knownTopics;
+    mutable std::mutex m_knownTopicsMutex;
 };
 
 const char * getVersion() noexcept;

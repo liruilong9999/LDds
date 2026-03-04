@@ -19,7 +19,8 @@ enum class LMessageType : uint8_t
     Ack = 2,
     Nack = 3,
     HeartbeatReq = 4,
-    HeartbeatRsp = 5
+    HeartbeatRsp = 5,
+    DiscoveryAnnounce = 6
 };
 
 constexpr uint32_t HEARTBEAT_TOPIC_ID = 0;

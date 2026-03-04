@@ -49,6 +49,13 @@ struct LDDSCORE_EXPORT TransportConfig {
     double reconnectMultiplier;
     int maxPendingMessages;
     SendQueueOverflowPolicy sendQueueOverflowPolicy;
+    bool enableDiscovery;
+    int discoveryIntervalMs;
+    int peerTtlMs;
+    quint16 discoveryPort;
+    bool enableMulticast;
+    QString multicastGroup;
+    int multicastTtl;
 
     TransportConfig();
 };

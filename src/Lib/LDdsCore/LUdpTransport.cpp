@@ -311,6 +311,34 @@ bool LUdpTransport::initializeSocket()
         return false;
     }
 
+    if (config.enableMulticast) {
+        const QString multicastGroupText = config.multicastGroup.trimmed();
+        if (multicastGroupText.isEmpty()) {
+            setError(QStringLiteral("Multicast is enabled but multicastGroup is empty"));
+            return false;
+        }
+
+        const QHostAddress multicastGroup(multicastGroupText);
+        if (multicastGroup.isNull() || !multicastGroup.isMulticast()) {
+            setError(QStringLiteral("Invalid multicast group: %1").arg(multicastGroupText));
+            return false;
+        }
+
+        if (!receiveSocket->joinMulticastGroup(multicastGroup)) {
+            setError(
+                QStringLiteral("joinMulticastGroup failed (%1): %2")
+                    .arg(multicastGroupText, receiveSocket->errorString()));
+            return false;
+        }
+
+        if (config.multicastTtl > 0) {
+            sendSocket->setSocketOption(
+                QAbstractSocket::MulticastTtlOption,
+                config.multicastTtl
+            );
+        }
+    }
+
     setBoundPort(receiveSocket->localPort());
 
     {

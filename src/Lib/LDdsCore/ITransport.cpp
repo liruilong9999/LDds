@@ -24,6 +24,13 @@ TransportConfig::TransportConfig()
     , reconnectMultiplier(2.0)
     , maxPendingMessages(4096)
     , sendQueueOverflowPolicy(SendQueueOverflowPolicy::DropOldest)
+    , enableDiscovery(true)
+    , discoveryIntervalMs(1000)
+    , peerTtlMs(5000)
+    , discoveryPort(0)
+    , enableMulticast(false)
+    , multicastGroup()
+    , multicastTtl(1)
 {
 }
 

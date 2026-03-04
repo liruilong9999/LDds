@@ -281,7 +281,8 @@ void LMessage::setMessageType(LMessageType type) noexcept
         type == LMessageType::HeartbeatReq ||
         type == LMessageType::HeartbeatRsp ||
         type == LMessageType::Ack ||
-        type == LMessageType::Nack)
+        type == LMessageType::Nack ||
+        type == LMessageType::DiscoveryAnnounce)
     {
         m_topic = HEARTBEAT_TOPIC_ID;
     }
@@ -300,7 +301,8 @@ bool LMessage::isControlMessage() const noexcept
            m_messageType == LMessageType::Nack ||
            m_messageType == LMessageType::HeartbeatReq ||
            m_messageType == LMessageType::HeartbeatRsp ||
-           m_messageType == LMessageType::Heartbeat;
+           m_messageType == LMessageType::Heartbeat ||
+           m_messageType == LMessageType::DiscoveryAnnounce;
 }
 
 LMessage LMessage::makeHeartbeat(uint64_t sequence, uint64_t timestampMs)
@@ -435,7 +437,8 @@ bool LMessage::deserialize(const uint8_t * data, size_t size)
     m_topic = header.topic;
     m_sequence = header.sequence;
     m_domainId = header.domainId;
-    if (header.protocolVersion >= 2 && header.messageType <= static_cast<uint8_t>(LMessageType::HeartbeatRsp))
+    if (header.protocolVersion >= 2 &&
+        header.messageType <= static_cast<uint8_t>(LMessageType::DiscoveryAnnounce))
     {
         m_messageType = static_cast<LMessageType>(header.messageType);
     }

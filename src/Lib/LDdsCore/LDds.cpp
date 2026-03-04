@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <exception>
 #include <limits>
 #include <string>
@@ -20,6 +21,74 @@ constexpr int32_t RELIABLE_DEFAULT_RETRANSMIT_MS = 200;
 constexpr int32_t RELIABLE_MIN_RETRANSMIT_MS = 80;
 constexpr int32_t RELIABLE_MAX_RETRANSMIT_MS = 1000;
 constexpr int32_t RELIABLE_MIN_HEARTBEAT_PROBE_MS = 300;
+constexpr uint8_t DISCOVERY_ANNOUNCE_VERSION = 1U;
+constexpr uint32_t DISCOVERY_CAP_RELIABLE_UDP = 0x01U;
+constexpr uint32_t DISCOVERY_CAP_TCP = 0x02U;
+constexpr uint32_t DISCOVERY_CAP_MULTICAST = 0x04U;
+constexpr int32_t DISCOVERY_MIN_INTERVAL_MS = 300;
+constexpr int32_t DISCOVERY_MIN_PEER_TTL_MS = 1000;
+constexpr int32_t DISCOVERY_MAX_TOPICS = 1024;
+
+void appendU8(std::vector<uint8_t> & out, uint8_t value)
+{
+    out.push_back(value);
+}
+
+void appendU16(std::vector<uint8_t> & out, uint16_t value)
+{
+    out.push_back(static_cast<uint8_t>(value & 0xFFU));
+    out.push_back(static_cast<uint8_t>((value >> 8) & 0xFFU));
+}
+
+void appendU32(std::vector<uint8_t> & out, uint32_t value)
+{
+    out.push_back(static_cast<uint8_t>(value & 0xFFU));
+    out.push_back(static_cast<uint8_t>((value >> 8) & 0xFFU));
+    out.push_back(static_cast<uint8_t>((value >> 16) & 0xFFU));
+    out.push_back(static_cast<uint8_t>((value >> 24) & 0xFFU));
+}
+
+bool readU8(const std::vector<uint8_t> & data, size_t & offset, uint8_t & value)
+{
+    if (offset + 1 > data.size())
+    {
+        return false;
+    }
+    value = data[offset];
+    ++offset;
+    return true;
+}
+
+bool readU16(const std::vector<uint8_t> & data, size_t & offset, uint16_t & value)
+{
+    if (offset + 2 > data.size())
+    {
+        return false;
+    }
+    value = static_cast<uint16_t>(data[offset]) |
+            static_cast<uint16_t>(static_cast<uint16_t>(data[offset + 1]) << 8);
+    offset += 2;
+    return true;
+}
+
+bool readU32(const std::vector<uint8_t> & data, size_t & offset, uint32_t & value)
+{
+    if (offset + 4 > data.size())
+    {
+        return false;
+    }
+    value = static_cast<uint32_t>(data[offset]) |
+            (static_cast<uint32_t>(data[offset + 1]) << 8) |
+            (static_cast<uint32_t>(data[offset + 2]) << 16) |
+            (static_cast<uint32_t>(data[offset + 3]) << 24);
+    offset += 4;
+    return true;
+}
+
+QHostAddress resolveDomainMulticastGroup(DomainId domainId)
+{
+    return QHostAddress(QStringLiteral("239.255.0.%1").arg(static_cast<uint32_t>(domainId)));
+}
 
 uint32_t fnv1aHash32(const std::string & value)
 {
@@ -145,6 +214,18 @@ LDds::LDds()
     , m_reliablePending()
     , m_reliableReceivers()
     , m_reliableMutex()
+    , m_discoveryEnabled(false)
+    , m_discoveryUseMulticast(false)
+    , m_discoveryNodeId(1)
+    , m_discoveryPort(0)
+    , m_discoveryInterval(1000)
+    , m_peerTtl(5000)
+    , m_lastDiscoverySend(std::chrono::steady_clock::now())
+    , m_discoveryMulticastGroup()
+    , m_discoveryPeers()
+    , m_discoveryMutex()
+    , m_knownTopics()
+    , m_knownTopicsMutex()
 {
 }
 
@@ -217,6 +298,57 @@ bool LDds::initialize(const LQos & qos, const TransportConfig & transportConfig,
         effectiveTransportConfig.domainPortOffset = effectiveQos.domainPortOffset;
     }
 
+    const bool isUdpTransport = (effectiveQos.transportType == TransportType::UDP);
+    if (isUdpTransport && effectiveTransportConfig.enableDiscovery)
+    {
+        const bool hasConfiguredRemote =
+            !effectiveTransportConfig.remoteAddress.isEmpty() &&
+            effectiveTransportConfig.remotePort != 0;
+        if (hasConfiguredRemote)
+        {
+            // Preserve legacy point-to-point behavior when remote is explicitly configured.
+            effectiveTransportConfig.enableDiscovery = false;
+        }
+
+        if (effectiveTransportConfig.enableDiscovery &&
+            effectiveTransportConfig.discoveryIntervalMs < DISCOVERY_MIN_INTERVAL_MS)
+        {
+            effectiveTransportConfig.discoveryIntervalMs = DISCOVERY_MIN_INTERVAL_MS;
+        }
+        if (effectiveTransportConfig.enableDiscovery &&
+            effectiveTransportConfig.peerTtlMs < DISCOVERY_MIN_PEER_TTL_MS)
+        {
+            effectiveTransportConfig.peerTtlMs = DISCOVERY_MIN_PEER_TTL_MS;
+        }
+
+        if (effectiveTransportConfig.enableDiscovery &&
+            effectiveTransportConfig.bindPort == 0 &&
+            !effectiveTransportConfig.enableDomainPortMapping)
+        {
+            effectiveTransportConfig.enableDomainPortMapping = true;
+            if (effectiveTransportConfig.basePort == 0)
+            {
+                effectiveTransportConfig.basePort = 20000;
+            }
+            if (effectiveTransportConfig.domainPortOffset == 0)
+            {
+                effectiveTransportConfig.domainPortOffset = 10;
+            }
+        }
+
+        if (effectiveTransportConfig.enableDiscovery)
+        {
+            effectiveTransportConfig.enableBroadcast = true;
+        }
+        if (effectiveTransportConfig.enableDiscovery &&
+            effectiveTransportConfig.enableMulticast &&
+            effectiveTransportConfig.multicastGroup.isEmpty())
+        {
+            effectiveTransportConfig.multicastGroup =
+                resolveDomainMulticastGroup(effectiveDomainId).toString();
+        }
+    }
+
     std::string mappingError;
     if (!applyDomainPortMapping(effectiveTransportConfig, effectiveDomainId, mappingError))
     {
@@ -260,6 +392,7 @@ bool LDds::initialize(const LQos & qos, const TransportConfig & transportConfig,
     }
 
     initializeReliableState();
+    initializeDiscoveryState(effectiveTransportConfig);
 
     m_sequence.store(0);
     m_running.store(true);
@@ -296,6 +429,7 @@ void LDds::shutdown() noexcept
     m_running.store(false);
     stopQosThread();
     clearReliableState();
+    clearDiscoveryState();
 
     if (m_pTransport)
     {
@@ -312,6 +446,11 @@ void LDds::shutdown() noexcept
         std::lock_guard<std::mutex> lock(m_qosMutex);
         m_lastTopicActivity.clear();
         m_deadlineMissedTopics.clear();
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_knownTopicsMutex);
+        m_knownTopics.clear();
     }
 
     m_domain.destroy();
@@ -345,13 +484,18 @@ bool LDds::registerType(
     LTypeRegistry::DeserializeFn deserializer
 )
 {
-    return m_pTypeRegistry->registerType(
+    const bool ok = m_pTypeRegistry->registerType(
         typeName,
         topic,
         std::move(factory),
         std::move(serializer),
         std::move(deserializer)
     );
+    if (ok)
+    {
+        rememberKnownTopic(topic);
+    }
+    return ok;
 }
 
 bool LDds::publishTopic(uint32_t topic, const std::vector<uint8_t> & payload)
@@ -394,6 +538,7 @@ void LDds::subscribeTopic(uint32_t topic, TopicCallback callback)
 
     std::lock_guard<std::mutex> lock(m_subscribersMutex);
     m_subscribers[topic].push_back(std::move(callback));
+    rememberKnownTopic(topic);
 }
 
 void LDds::unsubscribeTopic(uint32_t topic)
@@ -891,6 +1036,426 @@ void LDds::deliverDataMessage(const LMessage & message)
     }
 }
 
+bool LDds::isDiscoveryMessage(const LMessage & message) const noexcept
+{
+    return message.getMessageType() == LMessageType::DiscoveryAnnounce;
+}
+
+bool LDds::encodeDiscoveryAnnounce(std::vector<uint8_t> & payload) const
+{
+    payload.clear();
+
+    quint16 endpointPort = 0;
+    bool discoveryEnabled = false;
+    bool useMulticast = false;
+    uint32_t nodeId = 0;
+    quint16 announcePort = 0;
+    {
+        std::lock_guard<std::mutex> lock(m_discoveryMutex);
+        discoveryEnabled = m_discoveryEnabled;
+        useMulticast = m_discoveryUseMulticast;
+        nodeId = m_discoveryNodeId;
+        announcePort = m_discoveryPort;
+    }
+
+    if (!discoveryEnabled || !m_pTransport)
+    {
+        return false;
+    }
+
+    endpointPort = m_pTransport->getBoundPort();
+    if (endpointPort == 0)
+    {
+        endpointPort = announcePort;
+    }
+    if (endpointPort == 0)
+    {
+        return false;
+    }
+
+    const std::vector<uint32_t> topics = snapshotKnownTopics();
+    const uint16_t topicCount = static_cast<uint16_t>(
+        std::min(static_cast<size_t>(DISCOVERY_MAX_TOPICS), topics.size()));
+
+    uint32_t capabilities = 0;
+    if (m_qos.reliable && m_pTransport->getProtocol() == TransportProtocol::UDP)
+    {
+        capabilities |= DISCOVERY_CAP_RELIABLE_UDP;
+    }
+    if (m_pTransport->getProtocol() == TransportProtocol::TCP)
+    {
+        capabilities |= DISCOVERY_CAP_TCP;
+    }
+    if (useMulticast)
+    {
+        capabilities |= DISCOVERY_CAP_MULTICAST;
+    }
+
+    appendU8(payload, DISCOVERY_ANNOUNCE_VERSION);
+    appendU32(payload, nodeId);
+    appendU8(payload, static_cast<uint8_t>(m_effectiveDomainId));
+    appendU16(payload, endpointPort);
+    appendU32(payload, capabilities);
+    appendU16(payload, topicCount);
+    for (size_t i = 0; i < topicCount; ++i)
+    {
+        appendU32(payload, topics[i]);
+    }
+
+    return true;
+}
+
+bool LDds::decodeDiscoveryAnnounce(
+    const LMessage & message,
+    DiscoveryAnnounce & announce) const
+{
+    if (!isDiscoveryMessage(message))
+    {
+        return false;
+    }
+
+    const std::vector<uint8_t> & payload = message.getPayload();
+    size_t offset = 0;
+    uint16_t topicCount = 0;
+
+    if (!readU8(payload, offset, announce.version))
+    {
+        return false;
+    }
+    if (!readU32(payload, offset, announce.nodeId))
+    {
+        return false;
+    }
+    if (!readU8(payload, offset, announce.domainId))
+    {
+        return false;
+    }
+    if (!readU16(payload, offset, announce.endpointPort))
+    {
+        return false;
+    }
+    if (!readU32(payload, offset, announce.capabilities))
+    {
+        return false;
+    }
+    if (!readU16(payload, offset, topicCount))
+    {
+        return false;
+    }
+    if (topicCount > DISCOVERY_MAX_TOPICS)
+    {
+        return false;
+    }
+
+    announce.topics.clear();
+    announce.topics.reserve(topicCount);
+    for (uint16_t i = 0; i < topicCount; ++i)
+    {
+        uint32_t topic = 0;
+        if (!readU32(payload, offset, topic))
+        {
+            return false;
+        }
+        if (topic != 0)
+        {
+            announce.topics.push_back(topic);
+        }
+    }
+
+    return true;
+}
+
+void LDds::handleDiscoveryMessage(
+    const LMessage & message,
+    const QHostAddress & senderAddress,
+    quint16 senderPort)
+{
+    DiscoveryAnnounce announce;
+    if (!decodeDiscoveryAnnounce(message, announce))
+    {
+        return;
+    }
+
+    if (announce.version == 0U || announce.version > DISCOVERY_ANNOUNCE_VERSION)
+    {
+        return;
+    }
+    if (announce.domainId != static_cast<uint8_t>(m_effectiveDomainId))
+    {
+        return;
+    }
+
+    uint32_t localNodeId = 0;
+    {
+        std::lock_guard<std::mutex> lock(m_discoveryMutex);
+        localNodeId = m_discoveryNodeId;
+    }
+    if (announce.nodeId == 0 || announce.nodeId == localNodeId)
+    {
+        return;
+    }
+
+    const quint16 endpointPort = (announce.endpointPort != 0) ? announce.endpointPort : senderPort;
+    if (endpointPort == 0 || senderAddress.isNull())
+    {
+        return;
+    }
+
+    bool isNewPeer = false;
+    bool endpointChanged = false;
+    {
+        std::lock_guard<std::mutex> lock(m_discoveryMutex);
+        auto it = m_discoveryPeers.find(announce.nodeId);
+        if (it == m_discoveryPeers.end())
+        {
+            DiscoveryPeerInfo peer;
+            peer.address = senderAddress;
+            peer.endpointPort = endpointPort;
+            peer.lastSeen = std::chrono::steady_clock::now();
+            peer.topics = announce.topics;
+            peer.capabilities = announce.capabilities;
+            peer.online = true;
+            m_discoveryPeers.emplace(announce.nodeId, std::move(peer));
+            isNewPeer = true;
+        }
+        else
+        {
+            endpointChanged = (it->second.address != senderAddress) || (it->second.endpointPort != endpointPort);
+            it->second.address = senderAddress;
+            it->second.endpointPort = endpointPort;
+            it->second.lastSeen = std::chrono::steady_clock::now();
+            it->second.topics = announce.topics;
+            it->second.capabilities = announce.capabilities;
+            it->second.online = true;
+        }
+    }
+
+    if (isNewPeer || endpointChanged)
+    {
+        setLastError(
+            "discovery peer online nodeId=" + std::to_string(announce.nodeId) +
+            ", endpoint=" + senderAddress.toString().toStdString() +
+            ":" + std::to_string(static_cast<uint32_t>(endpointPort)));
+    }
+}
+
+void LDds::initializeDiscoveryState(const TransportConfig & transportConfig)
+{
+    const auto now = std::chrono::steady_clock::now();
+
+    bool enabled =
+        m_pTransport &&
+        m_pTransport->getProtocol() == TransportProtocol::UDP &&
+        transportConfig.enableDiscovery;
+
+    quint16 discoveryPort = transportConfig.discoveryPort;
+    if (discoveryPort == 0 && m_pTransport)
+    {
+        discoveryPort = m_pTransport->getBoundPort();
+    }
+    if (discoveryPort == 0)
+    {
+        discoveryPort = transportConfig.bindPort;
+    }
+
+    int intervalMs = std::max(DISCOVERY_MIN_INTERVAL_MS, transportConfig.discoveryIntervalMs);
+    int peerTtlMs = std::max(DISCOVERY_MIN_PEER_TTL_MS, transportConfig.peerTtlMs);
+    if (peerTtlMs < intervalMs * 2)
+    {
+        peerTtlMs = intervalMs * 2;
+    }
+
+    const quint16 seedPort =
+        (m_pTransport != nullptr && m_pTransport->getBoundPort() != 0)
+            ? m_pTransport->getBoundPort()
+            : transportConfig.bindPort;
+    const std::string nodeSeed =
+        "discovery|" + std::to_string(static_cast<uint32_t>(m_effectiveDomainId)) +
+        "|" + std::to_string(static_cast<uint32_t>(seedPort)) +
+        "|" + std::to_string(static_cast<uintptr_t>(reinterpret_cast<uintptr_t>(this)));
+    const uint32_t nodeId = fnv1aHash32(nodeSeed);
+
+    QHostAddress multicastGroup;
+    bool useMulticast = enabled && transportConfig.enableMulticast;
+    if (useMulticast)
+    {
+        if (!transportConfig.multicastGroup.isEmpty())
+        {
+            multicastGroup = QHostAddress(transportConfig.multicastGroup);
+        }
+        if (multicastGroup.isNull())
+        {
+            multicastGroup = resolveDomainMulticastGroup(m_effectiveDomainId);
+        }
+        if (!multicastGroup.isMulticast())
+        {
+            useMulticast = false;
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(m_discoveryMutex);
+    m_discoveryEnabled = enabled;
+    m_discoveryUseMulticast = useMulticast;
+    m_discoveryNodeId = nodeId;
+    m_discoveryPort = discoveryPort;
+    m_discoveryInterval = std::chrono::milliseconds(intervalMs);
+    m_peerTtl = std::chrono::milliseconds(peerTtlMs);
+    m_lastDiscoverySend = now - m_discoveryInterval;
+    m_discoveryMulticastGroup = multicastGroup;
+    m_discoveryPeers.clear();
+}
+
+void LDds::clearDiscoveryState() noexcept
+{
+    std::lock_guard<std::mutex> lock(m_discoveryMutex);
+    m_discoveryEnabled = false;
+    m_discoveryUseMulticast = false;
+    m_discoveryNodeId = 1;
+    m_discoveryPort = 0;
+    m_discoveryPeers.clear();
+    m_discoveryMulticastGroup.clear();
+}
+
+void LDds::processDiscovery(const std::chrono::steady_clock::time_point & now)
+{
+    if (!m_running.load() || !m_pTransport)
+    {
+        return;
+    }
+
+    bool discoveryEnabled = false;
+    bool shouldAnnounce = false;
+    bool useMulticast = false;
+    quint16 discoveryPort = 0;
+    QHostAddress multicastGroup;
+    std::vector<uint32_t> expiredPeers;
+
+    {
+        std::lock_guard<std::mutex> lock(m_discoveryMutex);
+        discoveryEnabled = m_discoveryEnabled;
+        if (!discoveryEnabled)
+        {
+            return;
+        }
+
+        for (auto it = m_discoveryPeers.begin(); it != m_discoveryPeers.end();)
+        {
+            if (now - it->second.lastSeen > m_peerTtl)
+            {
+                expiredPeers.push_back(it->first);
+                it = m_discoveryPeers.erase(it);
+            }
+            else
+            {
+                ++it;
+            }
+        }
+
+        if (now - m_lastDiscoverySend >= m_discoveryInterval)
+        {
+            shouldAnnounce = true;
+            m_lastDiscoverySend = now;
+        }
+
+        useMulticast = m_discoveryUseMulticast;
+        multicastGroup = m_discoveryMulticastGroup;
+        discoveryPort = m_discoveryPort;
+    }
+
+    for (uint32_t nodeId : expiredPeers)
+    {
+        setLastError("discovery peer offline nodeId=" + std::to_string(nodeId));
+    }
+
+    if (!shouldAnnounce || discoveryPort == 0)
+    {
+        return;
+    }
+
+    std::vector<uint8_t> payload;
+    if (!encodeDiscoveryAnnounce(payload))
+    {
+        return;
+    }
+
+    const uint64_t sequence = m_sequence.fetch_add(1) + 1;
+    LMessage announce(HEARTBEAT_TOPIC_ID, sequence, payload, LMessageType::DiscoveryAnnounce);
+    announce.setDomainId(static_cast<uint8_t>(m_effectiveDomainId));
+    announce.setWriterId(m_discoveryNodeId);
+
+    const TransportConfig config = m_pTransport->getConfig();
+    if (useMulticast && !multicastGroup.isNull())
+    {
+        (void)sendMessageThroughTransport(announce, &multicastGroup, discoveryPort);
+    }
+    if (config.enableBroadcast)
+    {
+        const QHostAddress broadcastAddress = QHostAddress::Broadcast;
+        (void)sendMessageThroughTransport(announce, &broadcastAddress, discoveryPort);
+    }
+}
+
+std::vector<std::pair<QHostAddress, quint16>> LDds::snapshotDiscoveryTargets(uint32_t topic) const
+{
+    std::vector<std::pair<QHostAddress, quint16>> targets;
+    const auto now = std::chrono::steady_clock::now();
+
+    std::lock_guard<std::mutex> lock(m_discoveryMutex);
+    if (!m_discoveryEnabled)
+    {
+        return targets;
+    }
+
+    for (const auto & pair : m_discoveryPeers)
+    {
+        const DiscoveryPeerInfo & peer = pair.second;
+        if (!peer.online || peer.endpointPort == 0 || peer.address.isNull())
+        {
+            continue;
+        }
+        if (now - peer.lastSeen > m_peerTtl)
+        {
+            continue;
+        }
+
+        if (!peer.topics.empty() &&
+            std::find(peer.topics.begin(), peer.topics.end(), topic) == peer.topics.end())
+        {
+            continue;
+        }
+
+        targets.push_back({peer.address, peer.endpointPort});
+    }
+
+    return targets;
+}
+
+void LDds::rememberKnownTopic(uint32_t topic)
+{
+    if (topic == 0)
+    {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(m_knownTopicsMutex);
+    m_knownTopics.insert(topic);
+}
+
+std::vector<uint32_t> LDds::snapshotKnownTopics() const
+{
+    std::vector<uint32_t> topics;
+    std::lock_guard<std::mutex> lock(m_knownTopicsMutex);
+    topics.reserve(m_knownTopics.size());
+    for (const uint32_t topic : m_knownTopics)
+    {
+        if (topic != 0)
+        {
+            topics.push_back(topic);
+        }
+    }
+    std::sort(topics.begin(), topics.end());
+    return topics;
+}
+
 uint32_t LDds::resolveReliableWriterId(
     const LMessage & message,
     const QHostAddress & senderAddress,
@@ -923,6 +1488,7 @@ bool LDds::publishSerializedTopic(
         setLastError("dds is not running");
         return false;
     }
+    rememberKnownTopic(topic);
 
     const uint64_t sequence = m_sequence.fetch_add(1) + 1;
     LMessage       message(topic, sequence, payload);
@@ -939,6 +1505,17 @@ bool LDds::publishSerializedTopic(
         windowSize = m_reliableWindowSize;
     }
 
+    bool discoveryEnabled = false;
+    {
+        std::lock_guard<std::mutex> lock(m_discoveryMutex);
+        discoveryEnabled = m_discoveryEnabled;
+    }
+    const std::vector<std::pair<QHostAddress, quint16>> discoveryTargets =
+        snapshotDiscoveryTargets(topic);
+    const TransportConfig currentTransportConfig = m_pTransport->getConfig();
+    const bool hasDefaultRemote =
+        !currentTransportConfig.remoteAddress.isEmpty() && currentTransportConfig.remotePort != 0;
+
     if (reliableUdpEnabled)
     {
         const auto now = std::chrono::steady_clock::now();
@@ -948,12 +1525,31 @@ bool LDds::publishSerializedTopic(
         message.setWindowStart(sequence);
         message.setWindowSize(windowSize);
 
+        bool hasExplicitTarget = false;
+        QHostAddress targetAddress;
+        quint16 targetPort = 0;
+        if (!hasDefaultRemote && !discoveryTargets.empty())
+        {
+            hasExplicitTarget = true;
+            targetAddress = discoveryTargets.front().first;
+            targetPort = discoveryTargets.front().second;
+        }
+        if (!hasDefaultRemote && !hasExplicitTarget && discoveryEnabled)
+        {
+            setLastError(
+                "reliable udp send skipped: no discovered peer for topic=" + std::to_string(topic));
+            return false;
+        }
+
         {
             std::lock_guard<std::mutex> lock(m_reliableMutex);
             m_reliablePending[sequence] = ReliablePendingEntry{message, now, 0U};
         }
 
-        if (!sendMessageThroughTransport(message))
+        const bool sent = hasExplicitTarget
+            ? sendMessageThroughTransport(message, &targetAddress, targetPort)
+            : sendMessageThroughTransport(message);
+        if (!sent)
         {
             {
                 std::lock_guard<std::mutex> lock(m_reliableMutex);
@@ -965,12 +1561,40 @@ bool LDds::publishSerializedTopic(
             return false;
         }
     }
-    else if (!sendMessageThroughTransport(message))
+    else
     {
-        setLastError(
-            "sendMessage failed (domain=" + std::to_string(m_effectiveDomainId) + "): " +
-            m_pTransport->getLastError().toStdString());
-        return false;
+        bool sentAny = false;
+        for (const auto & endpoint : discoveryTargets)
+        {
+            if (sendMessageThroughTransport(message, &endpoint.first, endpoint.second))
+            {
+                sentAny = true;
+            }
+        }
+
+        if (hasDefaultRemote)
+        {
+            if (sendMessageThroughTransport(message))
+            {
+                sentAny = true;
+            }
+        }
+
+        if (!sentAny)
+        {
+            if (discoveryEnabled && !hasDefaultRemote)
+            {
+                setLastError(
+                    "sendMessage skipped: no discovered peers for topic=" + std::to_string(topic));
+            }
+            else
+            {
+                setLastError(
+                    "sendMessage failed (domain=" + std::to_string(m_effectiveDomainId) + "): " +
+                    m_pTransport->getLastError().toStdString());
+            }
+            return false;
+        }
     }
 
     m_domain.cacheTopicData(static_cast<int>(topic), payload, dataType);
@@ -992,6 +1616,12 @@ void LDds::handleTransportMessage(
 
     try
     {
+        if (isDiscoveryMessage(message))
+        {
+            handleDiscoveryMessage(message, senderAddress, senderPort);
+            return;
+        }
+
         bool reliableUdpEnabled = false;
         {
             std::lock_guard<std::mutex> lock(m_reliableMutex);
@@ -1118,6 +1748,7 @@ void LDds::qosThreadFunc()
                 (void)sendMessageThroughTransport(heartbeat);
             }
 
+            processDiscovery(now);
             processReliableOutgoing(now);
 
             for (const auto & missed : deadlineMissed)
