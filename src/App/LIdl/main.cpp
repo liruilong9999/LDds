@@ -9,14 +9,97 @@
 
 #include <cstdint>
 #include <cstdlib>
+#include <clocale>
 #include <iostream>
 #include <string>
 #include <vector>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #include "LIdlGenerator.h"
 #include "LIdlParser.h"
 
 namespace LDdsFramework {
+
+#ifdef _WIN32
+bool isConsoleHandle(const DWORD stdHandleId)
+{
+    const HANDLE handle = GetStdHandle(stdHandleId);
+    if (handle == nullptr || handle == INVALID_HANDLE_VALUE)
+    {
+        return false;
+    }
+
+    DWORD mode = 0;
+    return GetConsoleMode(handle, &mode) != 0;
+}
+
+class ConsoleEncodingGuard
+{
+public:
+    ConsoleEncodingGuard()
+        : oldOutputCodePage_(0U)
+        , oldInputCodePage_(0U)
+        , outputCodePageChanged_(false)
+        , inputCodePageChanged_(false)
+    {
+        const char* const currentLocale = std::setlocale(LC_ALL, nullptr);
+        if (currentLocale != nullptr)
+        {
+            oldLocale_ = currentLocale;
+        }
+
+        if (isConsoleHandle(STD_OUTPUT_HANDLE) || isConsoleHandle(STD_ERROR_HANDLE))
+        {
+            oldOutputCodePage_ = GetConsoleOutputCP();
+            if (oldOutputCodePage_ != 0U && oldOutputCodePage_ != CP_UTF8)
+            {
+                outputCodePageChanged_ = (SetConsoleOutputCP(CP_UTF8) != 0);
+            }
+        }
+
+        if (isConsoleHandle(STD_INPUT_HANDLE))
+        {
+            oldInputCodePage_ = GetConsoleCP();
+            if (oldInputCodePage_ != 0U && oldInputCodePage_ != CP_UTF8)
+            {
+                inputCodePageChanged_ = (SetConsoleCP(CP_UTF8) != 0);
+            }
+        }
+
+        if (std::setlocale(LC_ALL, ".UTF-8") == nullptr)
+        {
+            // Fallback to user-preferred locale if UTF-8 locale is unavailable.
+            std::setlocale(LC_ALL, "");
+        }
+    }
+
+    ~ConsoleEncodingGuard()
+    {
+        if (outputCodePageChanged_ && oldOutputCodePage_ != 0U)
+        {
+            SetConsoleOutputCP(oldOutputCodePage_);
+        }
+        if (inputCodePageChanged_ && oldInputCodePage_ != 0U)
+        {
+            SetConsoleCP(oldInputCodePage_);
+        }
+        if (!oldLocale_.empty())
+        {
+            std::setlocale(LC_ALL, oldLocale_.c_str());
+        }
+    }
+
+private:
+    UINT oldOutputCodePage_;
+    UINT oldInputCodePage_;
+    bool outputCodePageChanged_;
+    bool inputCodePageChanged_;
+    std::string oldLocale_;
+};
+#endif
 
 /**
  * @brief 命令行参数。
@@ -166,6 +249,10 @@ CommandLineOptions parseCommandLine(int argc, char* argv[])
  */
 int main(int argc, char* argv[])
 {
+#ifdef _WIN32
+    const ConsoleEncodingGuard consoleEncodingGuard;
+#endif
+
     const CommandLineOptions options = parseCommandLine(argc, argv);
 
     if (options.showVersion)
