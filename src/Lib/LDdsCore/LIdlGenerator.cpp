@@ -101,6 +101,11 @@ std::string toUpper(std::string text)
     return text;
 }
 
+std::string makeMacroToken(const std::string & text)
+{
+    return toUpper(sanitizeName(text));
+}
+
 std::string toPascalCase(const std::string & text)
 {
     std::string out;
@@ -874,13 +879,17 @@ std::string generateTopicHeader(const std::string & prefix, const LIdlFile & fil
 {
     const std::string guard = toUpper(prefix) + "_TOPIC_H";
     const std::string exportMacro = toUpper(prefix) + "_IDL_API";
+    const std::string macroPrefix = makeMacroToken(prefix);
     const std::string enumName = toPascalCase(prefix) + "TopicId";
     const std::string registerFn = "register" + toPascalCase(prefix) + "Types";
+    const std::string resolveIdFn = "tryResolve" + toPascalCase(prefix) + "TopicId";
+    const std::string resolveNameFn = "tryResolve" + toPascalCase(prefix) + "TopicName";
 
     std::ostringstream out;
     out << "#ifndef " << guard << "\n";
     out << "#define " << guard << "\n\n";
-    out << "#include <cstdint>\n\n";
+    out << "#include <cstdint>\n";
+    out << "#include <string>\n\n";
     out << "#include \"" << prefix << "_export.h\"\n";
     out << "#include \"" << prefix << "_define.h\"\n";
     out << "#include \"LTypeRegistry.h\"\n\n";
@@ -911,7 +920,53 @@ std::string generateTopicHeader(const std::string & prefix, const LIdlFile & fil
         }
     }
     out << "};\n\n";
+
+    for (const auto & topic : file.topics)
+    {
+        const std::string token = makeMacroToken(topic.name);
+        out << "#define " << macroPrefix << "_TOPIC_NAME_" << token
+            << " \"" << topic.name << "\"\n";
+        out << "#define " << macroPrefix << "_TOPIC_ID_" << token
+            << " static_cast<uint32_t>(LDdsFramework::" << enumName
+            << "::" << topic.name << ")\n";
+    }
+    if (!file.topics.empty())
+    {
+        out << "\n";
+    }
+
     out << exportMacro << " void " << registerFn << "(LTypeRegistry & registry);\n";
+    out << "inline bool " << resolveIdFn
+        << "(const std::string & topicName, uint32_t & topicId)\n";
+    out << "{\n";
+    for (const auto & topic : file.topics)
+    {
+        out << "    if (topicName == \"" << topic.name << "\")\n";
+        out << "    {\n";
+        out << "        topicId = static_cast<uint32_t>(" << enumName << "::" << topic.name << ");\n";
+        out << "        return true;\n";
+        out << "    }\n";
+    }
+    out << "    topicId = 0;\n";
+    out << "    return false;\n";
+    out << "}\n\n";
+
+    out << "inline bool " << resolveNameFn
+        << "(uint32_t topicId, const char * & topicName)\n";
+    out << "{\n";
+    out << "    switch (static_cast<" << enumName << ">(topicId))\n";
+    out << "    {\n";
+    for (const auto & topic : file.topics)
+    {
+        out << "    case " << enumName << "::" << topic.name << ":\n";
+        out << "        topicName = \"" << topic.name << "\";\n";
+        out << "        return true;\n";
+    }
+    out << "    default:\n";
+    out << "        topicName = nullptr;\n";
+    out << "        return false;\n";
+    out << "    }\n";
+    out << "}\n";
     out << "} // namespace LDdsFramework\n\n";
     out << "#endif // " << guard << "\n";
     return out.str();

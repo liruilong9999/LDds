@@ -16,5 +16,11 @@ set_property(TARGET ExampleTypedPubSub PROPERTY FOLDER "App/Examples")
 add_subdirectory(ExampleIdlPipeline)
 set_property(TARGET ExampleIdlPipeline PROPERTY FOLDER "App/Examples")
 
+add_subdirectory(pub)
+set_property(TARGET pub PROPERTY FOLDER "App/Examples")
+
+add_subdirectory(sub)
+set_property(TARGET sub PROPERTY FOLDER "App/Examples")
+
 
 

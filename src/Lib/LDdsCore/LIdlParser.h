@@ -237,6 +237,9 @@ struct LIdlTopic
     std::string name;
     std::string typeName;
     std::string comment;
+    /**
+     * @brief Topic id锛?0 琛ㄧず鐢辫В鏋愬櫒鑷姩鐢熸垚绋冲畾 ID锛涗篃鍙€氳繃 [id, N] 鏄惧紡鎸囧畾銆?
+     */
     uint32_t    id;
     std::string sourceFile;
     uint32_t    line;

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <filesystem>
 #include <fstream>
 #include <limits>
@@ -49,6 +50,7 @@ struct LineState
     std::vector<LIdlFieldAttribute>  pendingFieldAttributes;
     std::string                      pendingComment;
     std::string                      pendingTopicComment;
+    uint32_t                         pendingTopicId = 0;
 };
 
 std::string trim(const std::string & text)
@@ -60,6 +62,18 @@ std::string trim(const std::string & text)
     }
     const auto end = text.find_last_not_of(" \t\r\n");
     return text.substr(begin, end - begin + 1);
+}
+
+std::string toLowerAscii(std::string text)
+{
+    std::transform(
+        text.begin(),
+        text.end(),
+        text.begin(),
+        [](unsigned char ch) {
+            return static_cast<char>(std::tolower(ch));
+        });
+    return text;
 }
 
 std::string stripBom(const std::string & text)
@@ -158,6 +172,63 @@ bool parseSignedInt64(const std::string & text, int64_t & valueOut)
     {
         return false;
     }
+}
+
+bool parseUnsignedInt32(const std::string & text, uint32_t & valueOut)
+{
+    const std::string normalized = trim(text);
+    if (normalized.empty())
+    {
+        return false;
+    }
+
+    try
+    {
+        size_t pos = 0;
+        const unsigned long long parsed = std::stoull(normalized, &pos, 10);
+        if (pos != normalized.size() ||
+            parsed > static_cast<unsigned long long>(std::numeric_limits<uint32_t>::max()))
+        {
+            return false;
+        }
+        valueOut = static_cast<uint32_t>(parsed);
+        return true;
+    }
+    catch (...)
+    {
+        return false;
+    }
+}
+
+std::string makeTopicBindingSignature(const LIdlTopic & topic)
+{
+    return topic.name + "=" + topic.typeName;
+}
+
+uint64_t fnv1a64(const std::string & text)
+{
+    uint64_t hash = 14695981039346656037ULL;
+    for (const unsigned char ch : text)
+    {
+        hash ^= static_cast<uint64_t>(ch);
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+uint32_t makeDeterministicTopicId(const LIdlTopic & topic)
+{
+    const uint64_t hash = fnv1a64(makeTopicBindingSignature(topic));
+    uint32_t id = static_cast<uint32_t>(hash ^ (hash >> 32));
+    if (id == 0U)
+    {
+        id = static_cast<uint32_t>((hash & 0x7FFFFFFFULL) + 1ULL);
+    }
+    if (id == 0U)
+    {
+        id = 1U;
+    }
+    return id;
 }
 
 bool parseSequenceType(
@@ -1159,6 +1230,50 @@ bool parseContent(
                 auto tokens = splitCommaRespectingQuotes(bracketText);
                 if (!tokens.empty())
                 {
+                    const std::string firstToken = toLowerAscii(unquote(tokens[0]));
+                    if (firstToken == "id" || firstToken == "topic_id" || firstToken == "topicid")
+                    {
+                        state.pendingTopicId = 0;
+                        if (tokens.size() < 2)
+                        {
+                            addError(
+                                errors,
+                                ParseErrorLevel::Error,
+                                "topic id annotation requires numeric id: " + bracketText,
+                                sourceName,
+                                lineNo,
+                                1);
+                        }
+                        else
+                        {
+                            uint32_t parsedTopicId = 0;
+                            if (!parseUnsignedInt32(tokens[1], parsedTopicId) || parsedTopicId == 0U)
+                            {
+                                addError(
+                                    errors,
+                                    ParseErrorLevel::Error,
+                                    "invalid topic id annotation: " + bracketText,
+                                    sourceName,
+                                    lineNo,
+                                    1);
+                            }
+                            else
+                            {
+                                state.pendingTopicId = parsedTopicId;
+                            }
+                        }
+
+                        if (tokens.size() > 2)
+                        {
+                            state.pendingTopicComment = unquote(tokens[2]);
+                        }
+                        else
+                        {
+                            state.pendingTopicComment.clear();
+                        }
+                        continue;
+                    }
+
                     state.pendingTopicComment = unquote(tokens[0]);
                 }
                 else
@@ -1176,6 +1291,7 @@ bool parseContent(
             topic.typeName = trim(match[2].str());
             topic.sourceFile = sourceName;
             topic.line = lineNo;
+            topic.id = state.pendingTopicId;
 
             if (!inlineComment.empty())
             {
@@ -1191,6 +1307,7 @@ bool parseContent(
             }
 
             state.pendingTopicComment.clear();
+            state.pendingTopicId = 0;
             state.pendingComment.clear();
             addTopicWithConflictCheck(context, errors, topic);
             continue;
@@ -1338,12 +1455,34 @@ bool parseFileRecursive(
     );
 }
 
-void assignTopicIds(std::vector<LIdlTopic> & topics)
+void assignTopicIds(std::vector<LIdlTopic> & topics, std::vector<ParseError> & errors)
 {
-    uint32_t nextId = 1;
+    std::unordered_map<uint32_t, std::string> signatureByTopicId;
     for (auto & topic : topics)
     {
-        topic.id = nextId++;
+        if (topic.id == 0U)
+        {
+            topic.id = makeDeterministicTopicId(topic);
+        }
+
+        const std::string signature = makeTopicBindingSignature(topic);
+        const auto it = signatureByTopicId.find(topic.id);
+        if (it != signatureByTopicId.end() && it->second != signature)
+        {
+            addError(
+                errors,
+                ParseErrorLevel::Error,
+                "topic id collision id=" + std::to_string(topic.id) +
+                    " between \"" + it->second + "\" and \"" + signature +
+                    "\"; set explicit id by [id, <number>, \"optional comment\"]",
+                topic.sourceFile,
+                topic.line,
+                1
+            );
+            continue;
+        }
+
+        signatureByTopicId[topic.id] = signature;
     }
 }
 
@@ -1372,7 +1511,7 @@ ParseResult LIdlParser::parse(const std::string & filePath)
 
     parseFileRecursive(filePath, 0, m_options, m_callback, m_errors, context);
 
-    assignTopicIds(context.ast->topics);
+    assignTopicIds(context.ast->topics, m_errors);
 
     result.astRoot = context.ast;
     result.errors = m_errors;
@@ -1419,7 +1558,7 @@ ParseResult LIdlParser::parseString(const std::string & idlContent, const std::s
         includeParser
     );
 
-    assignTopicIds(context.ast->topics);
+    assignTopicIds(context.ast->topics, m_errors);
 
     result.astRoot = context.ast;
     result.errors = m_errors;
@@ -1445,7 +1584,7 @@ ParseResult LIdlParser::parseMultiple(const std::vector<std::string> & filePaths
         parseFileRecursive(filePath, 0, m_options, m_callback, m_errors, context);
     }
 
-    assignTopicIds(context.ast->topics);
+    assignTopicIds(context.ast->topics, m_errors);
 
     result.astRoot = context.ast;
     result.errors = m_errors;
