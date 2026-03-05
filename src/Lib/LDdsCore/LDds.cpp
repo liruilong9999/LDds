@@ -140,9 +140,9 @@ bool readU64(const std::vector<uint8_t> & data, size_t & offset, uint64_t & valu
     return true;
 }
 
-QHostAddress resolveDomainMulticastGroup(DomainId domainId)
+LHostAddress resolveDomainMulticastGroup(DomainId domainId)
 {
-    return QHostAddress(QStringLiteral("239.255.0.%1").arg(static_cast<uint32_t>(domainId)));
+    return LHostAddress(LStringLiteral("239.255.0.%1").arg(static_cast<uint32_t>(domainId)));
 }
 
 uint32_t fnv1aHash32(const std::string & value)
@@ -580,7 +580,7 @@ bool LDds::initialize(const LQos & qos, const TransportConfig & transportConfig,
     }
 
     m_pTransport->setReceiveCallback(
-        [this](const LMessage & message, const QHostAddress & senderAddress, quint16 senderPort) {
+        [this](const LMessage & message, const LHostAddress & senderAddress, quint16 senderPort) {
             handleTransportMessage(message, senderAddress, senderPort);
         }
     );
@@ -892,7 +892,7 @@ bool LDds::createTransportFromQos(const LQos & qos, const TransportConfig & tran
 
 bool LDds::sendMessageThroughTransport(
     const LMessage & message,
-    const QHostAddress * targetAddress,
+    const LHostAddress * targetAddress,
     quint16 targetPort)
 {
     if (!m_pTransport)
@@ -1093,7 +1093,7 @@ void LDds::processReliableOutgoing(const std::chrono::steady_clock::time_point &
 
 void LDds::handleReliableControlMessage(
     const LMessage & message,
-    const QHostAddress & senderAddress,
+    const LHostAddress & senderAddress,
     quint16 senderPort)
 {
     if (!m_running.load())
@@ -1201,7 +1201,7 @@ void LDds::handleReliableControlMessage(
 
 void LDds::handleReliableDataMessage(
     const LMessage & message,
-    const QHostAddress & senderAddress,
+    const LHostAddress & senderAddress,
     quint16 senderPort)
 {
     if (!m_running.load())
@@ -1346,7 +1346,7 @@ void LDds::deliverDataMessage(const LMessage & message)
     const std::string dataType = m_pTypeRegistry->getTypeNameByTopic(topic);
     m_domain.cacheTopicData(static_cast<int>(topic), message.getPayload(), dataType);
     markTopicActivity(topic);
-    const QHostAddress senderAddress = message.getSenderAddress();
+    const LHostAddress senderAddress = message.getSenderAddress();
     emitStructuredLog(
         "info",
         "dispatch",
@@ -1505,7 +1505,7 @@ bool LDds::decodeDiscoveryAnnounce(
 
 void LDds::handleDiscoveryMessage(
     const LMessage & message,
-    const QHostAddress & senderAddress,
+    const LHostAddress & senderAddress,
     quint16 senderPort)
 {
     DiscoveryAnnounce announce;
@@ -1613,13 +1613,13 @@ void LDds::initializeDiscoveryState(const TransportConfig & transportConfig)
         "|" + std::to_string(static_cast<uintptr_t>(reinterpret_cast<uintptr_t>(this)));
     const uint32_t nodeId = fnv1aHash32(nodeSeed);
 
-    QHostAddress multicastGroup;
+    LHostAddress multicastGroup;
     bool useMulticast = enabled && transportConfig.enableMulticast;
     if (useMulticast)
     {
         if (!transportConfig.multicastGroup.isEmpty())
         {
-            multicastGroup = QHostAddress(transportConfig.multicastGroup);
+            multicastGroup = LHostAddress(transportConfig.multicastGroup);
         }
         if (multicastGroup.isNull())
         {
@@ -1665,7 +1665,7 @@ void LDds::processDiscovery(const std::chrono::steady_clock::time_point & now)
     bool shouldAnnounce = false;
     bool useMulticast = false;
     quint16 discoveryPort = 0;
-    QHostAddress multicastGroup;
+    LHostAddress multicastGroup;
     std::vector<uint32_t> expiredPeers;
 
     {
@@ -1728,14 +1728,14 @@ void LDds::processDiscovery(const std::chrono::steady_clock::time_point & now)
     }
     if (config.enableBroadcast)
     {
-        const QHostAddress broadcastAddress = QHostAddress::Broadcast;
+        const LHostAddress broadcastAddress = LHostAddress::Broadcast;
         (void)sendMessageThroughTransport(announce, &broadcastAddress, discoveryPort);
     }
 }
 
-std::vector<std::pair<QHostAddress, quint16>> LDds::snapshotDiscoveryTargets(uint32_t topic) const
+std::vector<std::pair<LHostAddress, quint16>> LDds::snapshotDiscoveryTargets(uint32_t topic) const
 {
-    std::vector<std::pair<QHostAddress, quint16>> targets;
+    std::vector<std::pair<LHostAddress, quint16>> targets;
     const auto now = std::chrono::steady_clock::now();
 
     std::lock_guard<std::mutex> lock(m_discoveryMutex);
@@ -1967,7 +1967,7 @@ bool LDds::applyHotReloadQos(const LQos & loadedQos)
 
 uint32_t LDds::resolveReliableWriterId(
     const LMessage & message,
-    const QHostAddress & senderAddress,
+    const LHostAddress & senderAddress,
     quint16 senderPort) const
 {
     if (message.getWriterId() != 0)
@@ -2025,7 +2025,7 @@ bool LDds::publishSerializedTopic(
         std::lock_guard<std::mutex> lock(m_discoveryMutex);
         discoveryEnabled = m_discoveryEnabled;
     }
-    const std::vector<std::pair<QHostAddress, quint16>> discoveryTargets =
+    const std::vector<std::pair<LHostAddress, quint16>> discoveryTargets =
         snapshotDiscoveryTargets(topic);
     const TransportConfig currentTransportConfig = m_pTransport->getConfig();
     const bool hasDefaultRemote =
@@ -2040,7 +2040,7 @@ bool LDds::publishSerializedTopic(
         message.setWindowSize(windowSize);
 
         bool hasExplicitTarget = false;
-        QHostAddress targetAddress;
+        LHostAddress targetAddress;
         quint16 targetPort = 0;
         if (!hasDefaultRemote && !discoveryTargets.empty())
         {
@@ -2119,7 +2119,7 @@ bool LDds::publishSerializedTopic(
 
 void LDds::handleTransportMessage(
     const LMessage &  message,
-    const QHostAddress & senderAddress,
+    const LHostAddress & senderAddress,
     quint16           senderPort
 )
 {
@@ -2451,7 +2451,7 @@ bool LDds::verifyIncomingSecurity(LMessage & message)
 
 void LDds::updateDropEstimate(
     const LMessage & message,
-    const QHostAddress & senderAddress,
+    const LHostAddress & senderAddress,
     quint16 senderPort)
 {
     const uint64_t seq = message.getSequence();
@@ -2542,7 +2542,7 @@ void LDds::emitStructuredLog(
     const char * module,
     const std::string & text,
     const LMessage * message,
-    const QHostAddress * peerAddress,
+    const LHostAddress * peerAddress,
     quint16 peerPort)
 {
     LogCallback callback;

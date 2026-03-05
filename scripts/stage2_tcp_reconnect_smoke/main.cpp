@@ -1,4 +1,4 @@
-﻿#include <atomic>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <iostream>
@@ -55,7 +55,7 @@ bool runReconnectCase()
 
     std::atomic<int> receivedCount(0);
     receiver.setReceiveCallback(
-        [&](const LMessage&, const QHostAddress&, quint16) {
+        [&](const LMessage&, const LHostAddress&, quint16) {
             receivedCount.fetch_add(1);
         }
     );

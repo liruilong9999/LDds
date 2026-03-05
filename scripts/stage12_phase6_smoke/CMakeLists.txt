@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.16)
+﻿cmake_minimum_required(VERSION 3.16)
 project(stage12_phase6_smoke LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -6,19 +6,6 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 get_filename_component(LDDS_ROOT "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
-
-if(DEFINED ENV{QT_DIR} AND NOT "$ENV{QT_DIR}" STREQUAL "")
-    list(PREPEND CMAKE_PREFIX_PATH "$ENV{QT_DIR}")
-    list(PREPEND CMAKE_PREFIX_PATH "$ENV{QT_DIR}/lib/cmake")
-endif()
-
-find_package(Qt6 QUIET COMPONENTS Core Network)
-if(Qt6_FOUND)
-    set(LDDS_QT_PACKAGE Qt6)
-else()
-    find_package(Qt5 REQUIRED COMPONENTS Core Network)
-    set(LDDS_QT_PACKAGE Qt5)
-endif()
 
 add_executable(stage12_phase6_smoke main.cpp)
 
@@ -62,7 +49,5 @@ else()
 endif()
 
 target_link_libraries(stage12_phase6_smoke PRIVATE
-    ${LDDS_IMPORTED_TARGET}
-    ${LDDS_QT_PACKAGE}::Core
-    ${LDDS_QT_PACKAGE}::Network
-)
+    ${LDDS_IMPORTED_TARGET})
+

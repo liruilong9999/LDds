@@ -269,15 +269,15 @@ void testLDdsInProcessPubSub(TestContext & ctx)
     qos.domainId = static_cast<uint8_t>(domainId);
 
     TransportConfig receiverConfig;
-    receiverConfig.bindAddress = QStringLiteral("127.0.0.1");
+    receiverConfig.bindAddress = LStringLiteral("127.0.0.1");
     receiverConfig.bindPort = receiverPort;
     receiverConfig.enableDiscovery = false;
     receiverConfig.enableDomainPortMapping = false;
 
     TransportConfig senderConfig;
-    senderConfig.bindAddress = QStringLiteral("127.0.0.1");
+    senderConfig.bindAddress = LStringLiteral("127.0.0.1");
     senderConfig.bindPort = senderPort;
-    senderConfig.remoteAddress = QStringLiteral("127.0.0.1");
+    senderConfig.remoteAddress = LStringLiteral("127.0.0.1");
     senderConfig.remotePort = receiverPort;
     senderConfig.enableDiscovery = false;
     senderConfig.enableDomainPortMapping = false;

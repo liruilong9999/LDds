@@ -14,7 +14,7 @@
 #include <mutex>
 #include <thread>
 
-class QUdpSocket;
+class LUdpSocket;
 
 namespace LDdsFramework {
 
@@ -69,7 +69,7 @@ public:
      * @return 发送成功返回 true。
      */
     bool sendMessageTo(const LMessage& message,
-                       const QHostAddress& targetAddress,
+                       const LHostAddress& targetAddress,
                        quint16 targetPort);
     /**
      * @brief 广播发送消息。
@@ -120,11 +120,11 @@ private:
     void receiveThreadFunc();
     bool initializeSocket();
     void closeSocket();
-    bool resolveRemoteFromConfig(QHostAddress& targetAddress, quint16& targetPort) const;
+    bool resolveRemoteFromConfig(LHostAddress& targetAddress, quint16& targetPort) const;
 
 private:
-    std::unique_ptr<QUdpSocket> m_receiveSocket;
-    std::unique_ptr<QUdpSocket> m_sendSocket;
+    std::unique_ptr<LUdpSocket> m_receiveSocket;
+    std::unique_ptr<LUdpSocket> m_sendSocket;
     std::thread m_receiveThread;
     std::atomic<bool> m_running;
 

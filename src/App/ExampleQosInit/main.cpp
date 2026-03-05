@@ -29,9 +29,9 @@ int main(int argc, char * argv[])
     }
 
     TransportConfig config;
-    config.bindAddress = QStringLiteral("127.0.0.1");
+    config.bindAddress = LStringLiteral("127.0.0.1");
     config.bindPort = 26201;
-    config.remoteAddress = QStringLiteral("127.0.0.1");
+    config.remoteAddress = LStringLiteral("127.0.0.1");
     config.remotePort = 26201;
     config.enableDiscovery = false;
     config.enableDomainPortMapping = false;

@@ -41,7 +41,7 @@ LQos makeQos()
 TransportConfig makeReceiverConfig()
 {
     TransportConfig config;
-    config.bindAddress = QStringLiteral("127.0.0.1");
+    config.bindAddress = LStringLiteral("127.0.0.1");
     config.bindPort = RECEIVER_PORT;
     config.enableDiscovery = false;
     config.enableDomainPortMapping = false;
@@ -51,9 +51,9 @@ TransportConfig makeReceiverConfig()
 TransportConfig makeSenderConfig()
 {
     TransportConfig config;
-    config.bindAddress = QStringLiteral("127.0.0.1");
+    config.bindAddress = LStringLiteral("127.0.0.1");
     config.bindPort = SENDER_PORT;
-    config.remoteAddress = QStringLiteral("127.0.0.1");
+    config.remoteAddress = LStringLiteral("127.0.0.1");
     config.remotePort = RECEIVER_PORT;
     config.enableDiscovery = false;
     config.enableDomainPortMapping = false;

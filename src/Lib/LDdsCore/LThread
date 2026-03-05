@@ -1,0 +1,14 @@
+#ifndef LQT_COMPAT_QTHREAD_H
+#define LQT_COMPAT_QTHREAD_H
+
+class LThread
+{
+public:
+    static LThread* currentThread()
+    {
+        thread_local LThread current;
+        return &current;
+    }
+};
+
+#endif // LQT_COMPAT_QTHREAD_H

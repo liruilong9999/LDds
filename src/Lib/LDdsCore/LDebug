@@ -1,0 +1,29 @@
+#ifndef LQT_COMPAT_QDEBUG_H
+#define LQT_COMPAT_QDEBUG_H
+
+#include <iostream>
+
+class LWarningStream
+{
+public:
+    LWarningStream() = default;
+
+    ~LWarningStream()
+    {
+        std::cerr << std::endl;
+    }
+
+    template<typename T>
+    LWarningStream& operator<<(const T& value)
+    {
+        std::cerr << value << " ";
+        return *this;
+    }
+};
+
+inline LWarningStream lWarning()
+{
+    return LWarningStream();
+}
+
+#endif // LQT_COMPAT_QDEBUG_H

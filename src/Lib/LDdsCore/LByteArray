@@ -1,0 +1,63 @@
+#ifndef LQT_COMPAT_QBYTEARRAY_H
+#define LQT_COMPAT_QBYTEARRAY_H
+
+#include <vector>
+
+class LByteArray
+{
+public:
+    LByteArray() = default;
+
+    void resize(int newSize)
+    {
+        if (newSize < 0)
+        {
+            newSize = 0;
+        }
+        data_.resize(static_cast<size_t>(newSize));
+    }
+
+    int size() const noexcept
+    {
+        return static_cast<int>(data_.size());
+    }
+
+    bool isEmpty() const noexcept
+    {
+        return data_.empty();
+    }
+
+    char* data() noexcept
+    {
+        return data_.empty() ? nullptr : data_.data();
+    }
+
+    const char* data() const noexcept
+    {
+        return data_.empty() ? nullptr : data_.data();
+    }
+
+    const char* constData() const noexcept
+    {
+        return data();
+    }
+
+    void append(const LByteArray& other)
+    {
+        data_.insert(data_.end(), other.data_.begin(), other.data_.end());
+    }
+
+    void append(const char* bytes, int length)
+    {
+        if (bytes == nullptr || length <= 0)
+        {
+            return;
+        }
+        data_.insert(data_.end(), bytes, bytes + length);
+    }
+
+private:
+    std::vector<char> data_;
+};
+
+#endif // LQT_COMPAT_QBYTEARRAY_H

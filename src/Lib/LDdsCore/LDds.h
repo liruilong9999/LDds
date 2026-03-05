@@ -256,7 +256,7 @@ private:
 
     struct DiscoveryPeerInfo
     {
-        QHostAddress address;
+        LHostAddress address;
         quint16 endpointPort;
         std::chrono::steady_clock::time_point lastSeen;
         std::vector<uint32_t> topics;
@@ -324,18 +324,18 @@ private:
     bool createTransportFromQos(const LQos & qos, const TransportConfig & transportConfig);
     bool sendMessageThroughTransport(
         const LMessage & message,
-        const QHostAddress * targetAddress = nullptr,
+        const LHostAddress * targetAddress = nullptr,
         quint16 targetPort = 0);
     void initializeReliableState();
     void clearReliableState() noexcept;
     void processReliableOutgoing(const std::chrono::steady_clock::time_point & now);
     void handleReliableControlMessage(
         const LMessage & message,
-        const QHostAddress & senderAddress,
+        const LHostAddress & senderAddress,
         quint16 senderPort);
     void handleReliableDataMessage(
         const LMessage & message,
-        const QHostAddress & senderAddress,
+        const LHostAddress & senderAddress,
         quint16 senderPort);
     void deliverDataMessage(const LMessage & message);
     bool isDiscoveryMessage(const LMessage & message) const noexcept;
@@ -345,12 +345,12 @@ private:
         DiscoveryAnnounce & announce) const;
     void handleDiscoveryMessage(
         const LMessage & message,
-        const QHostAddress & senderAddress,
+        const LHostAddress & senderAddress,
         quint16 senderPort);
     void initializeDiscoveryState(const TransportConfig & transportConfig);
     void clearDiscoveryState() noexcept;
     void processDiscovery(const std::chrono::steady_clock::time_point & now);
-    std::vector<std::pair<QHostAddress, quint16>> snapshotDiscoveryTargets(uint32_t topic) const;
+    std::vector<std::pair<LHostAddress, quint16>> snapshotDiscoveryTargets(uint32_t topic) const;
     void rememberKnownTopic(uint32_t topic);
     std::vector<uint32_t> snapshotKnownTopics() const;
     bool shouldAcceptMessageByOwnership(const LMessage & message, uint32_t topic);
@@ -361,7 +361,7 @@ private:
     SecurityRuntimeConfig snapshotSecurityConfig() const;
     bool applyOutgoingSecurity(LMessage & message);
     bool verifyIncomingSecurity(LMessage & message);
-    void updateDropEstimate(const LMessage & message, const QHostAddress & senderAddress, quint16 senderPort);
+    void updateDropEstimate(const LMessage & message, const LHostAddress & senderAddress, quint16 senderPort);
     void updateRuntimeGauges();
     void resetRuntimeMetrics() noexcept;
     void emitStructuredLog(
@@ -369,19 +369,19 @@ private:
         const char * module,
         const std::string & text,
         const LMessage * message = nullptr,
-        const QHostAddress * peerAddress = nullptr,
+        const LHostAddress * peerAddress = nullptr,
         quint16 peerPort = 0);
     std::string makeMessageId(const LMessage & message) const;
     uint32_t resolveReliableWriterId(
         const LMessage & message,
-        const QHostAddress & senderAddress,
+        const LHostAddress & senderAddress,
         quint16 senderPort) const;
     bool publishSerializedTopic(
         uint32_t                topic,
         std::vector<uint8_t> && payload,
         const std::string &     dataType
     );
-    void handleTransportMessage(const LMessage & message, const QHostAddress & senderAddress, quint16 senderPort);
+    void handleTransportMessage(const LMessage & message, const LHostAddress & senderAddress, quint16 senderPort);
     void markTopicActivity(uint32_t topic);
     void startQosThread();
     void stopQosThread() noexcept;
@@ -435,7 +435,7 @@ private:
     std::chrono::milliseconds m_discoveryInterval;
     std::chrono::milliseconds m_peerTtl;
     std::chrono::steady_clock::time_point m_lastDiscoverySend;
-    QHostAddress m_discoveryMulticastGroup;
+    LHostAddress m_discoveryMulticastGroup;
     std::unordered_map<uint32_t, DiscoveryPeerInfo> m_discoveryPeers;
     mutable std::mutex m_discoveryMutex;
 

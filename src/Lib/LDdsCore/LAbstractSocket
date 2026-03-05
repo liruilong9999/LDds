@@ -1,0 +1,114 @@
+#ifndef LQT_COMPAT_QABSTRACTSOCKET_H
+#define LQT_COMPAT_QABSTRACTSOCKET_H
+
+#include "LQtCompat.h"
+
+class LAbstractSocket
+{
+public:
+    enum SocketState {
+        UnconnectedState = 0,
+        ConnectedState = 1,
+        BoundState = 2,
+        ListeningState = 3
+    };
+
+    enum SocketOption {
+        ReceiveBufferSizeSocketOption = 1,
+        SendBufferSizeSocketOption = 2,
+        MulticastTtlOption = 3
+    };
+
+    enum BindFlag {
+        DefaultForPlatform = 0x00,
+        ShareAddress = 0x01,
+        ReuseAddressHint = 0x02
+    };
+
+    using BindMode = int;
+
+public:
+    LAbstractSocket()
+        : state_(UnconnectedState)
+        , receiveBufferSize_(0)
+        , sendBufferSize_(0)
+        , multicastTtl_(1)
+        , lastError_()
+    {
+    }
+
+    virtual ~LAbstractSocket() = default;
+
+    void setSocketOption(SocketOption option, int value)
+    {
+        switch (option)
+        {
+        case ReceiveBufferSizeSocketOption:
+            receiveBufferSize_ = value;
+            break;
+        case SendBufferSizeSocketOption:
+            sendBufferSize_ = value;
+            break;
+        case MulticastTtlOption:
+            multicastTtl_ = value;
+            break;
+        default:
+            break;
+        }
+    }
+
+    SocketState state() const noexcept
+    {
+        return state_;
+    }
+
+    LString errorString() const
+    {
+        return lastError_;
+    }
+
+protected:
+    void setState(SocketState state) noexcept
+    {
+        state_ = state;
+    }
+
+    void setErrorString(const LString& error)
+    {
+        lastError_ = error;
+    }
+
+    int receiveBufferSize() const noexcept
+    {
+        return receiveBufferSize_;
+    }
+
+    int sendBufferSize() const noexcept
+    {
+        return sendBufferSize_;
+    }
+
+    int multicastTtl() const noexcept
+    {
+        return multicastTtl_;
+    }
+
+private:
+    SocketState state_;
+    int receiveBufferSize_;
+    int sendBufferSize_;
+    int multicastTtl_;
+    LString lastError_;
+};
+
+inline LAbstractSocket::BindMode operator|(LAbstractSocket::BindFlag lhs, LAbstractSocket::BindFlag rhs)
+{
+    return static_cast<LAbstractSocket::BindMode>(static_cast<int>(lhs) | static_cast<int>(rhs));
+}
+
+inline LAbstractSocket::BindMode operator|(LAbstractSocket::BindMode lhs, LAbstractSocket::BindFlag rhs)
+{
+    return static_cast<LAbstractSocket::BindMode>(lhs | static_cast<int>(rhs));
+}
+
+#endif // LQT_COMPAT_QABSTRACTSOCKET_H

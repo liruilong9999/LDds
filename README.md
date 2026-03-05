@@ -37,7 +37,6 @@
 5. `cmake`
 工程级 CMake 模块：
 - `module.cmake`：统一 `CreateTarget(...)` 目标创建逻辑。
-- `module_qt.cmake`：Qt 组件查找与链接逻辑（支持 Qt6/Qt5 自动回退）。
 
 ## 3. CMake 设计说明
 
@@ -45,7 +44,7 @@
 
 1. 顶层 `CMakeLists.txt` 统一 C++ 标准、编译选项、输出行为。
 2. `module.cmake` 统一目标创建流程，减少子目录重复 CMake 样板。
-3. `module_qt.cmake` 优先查找 Qt6，找不到自动回退 Qt5。
+3. 传输层改为原生 socket 实现，不再依赖 Qt。
 4. stage 子工程 CMake 去除硬编码绝对路径，改为相对仓库根目录推导。
 5. stage 子工程按平台设置导入库路径：
 - Windows：`.lib + .dll`
@@ -58,13 +57,11 @@
 2. C++17 编译器
 - Windows：Visual Studio/MSVC
 - Linux：GCC 或 Clang
-3. Qt（Qt6 或 Qt5，至少包含 `Core`、`Network`，部分目标需要 `Xml`）
 
 可选：
 
-1. 设置环境变量 `QT_DIR` 指向 Qt 安装根目录或 `lib/cmake` 上级目录。
-2. Windows 运行时将 `bin` 加入 `PATH`。
-3. Linux 运行时设置 `LD_LIBRARY_PATH` 指向 `./bin/lib`。
+1. Windows 运行时将 `bin` 加入 `PATH`。
+2. Linux 运行时设置 `LD_LIBRARY_PATH` 指向 `./bin/lib`。
 
 ## 5. 构建方式
 
@@ -173,8 +170,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\run_stage13_phase7_smoke.ps1
 
 ## 10. 常见问题
 
-1. Qt 找不到
-- 设置 `QT_DIR`，或将 Qt 安装路径加入 `CMAKE_PREFIX_PATH`。
+1. 构建阶段提示缺少线程库
+- 确认使用 CMake 3.16+，并在 Linux 上安装基础构建工具链（含 pthread）。
 
 2. Windows 运行时找不到 DLL
 - 将仓库 `bin` 目录加入 `PATH`。

@@ -1,12 +1,12 @@
-#include "LTcpTransport.h"
+﻿#include "LTcpTransport.h"
 #include "LMessage.h"
 
-#include <QAbstractSocket>
-#include <QByteArray>
-#include <QDebug>
-#include <QTcpServer>
-#include <QTcpSocket>
-#include <QThread>
+#include <LAbstractSocket>
+#include <LByteArray>
+#include <LDebug>
+#include <LTcpServer>
+#include <LTcpSocket>
+#include <LThread>
 
 #include <chrono>
 #include <cmath>
@@ -26,7 +26,7 @@ uint32_t readLeUInt32(const uint8_t* data) noexcept
            (static_cast<uint32_t>(data[3]) << 24);
 }
 
-bool sendAll(QTcpSocket& socket, const uint8_t* data, size_t size)
+bool sendAll(LTcpSocket& socket, const uint8_t* data, size_t size)
 {
     size_t sentBytes = 0;
     int idleLoops = 0;
@@ -47,7 +47,7 @@ bool sendAll(QTcpSocket& socket, const uint8_t* data, size_t size)
                 return false;
             }
             if (!socket.waitForBytesWritten(200)) {
-                if (socket.state() != QAbstractSocket::ConnectedState) {
+                if (socket.state() != LAbstractSocket::ConnectedState) {
                     return false;
                 }
             }
@@ -59,7 +59,7 @@ bool sendAll(QTcpSocket& socket, const uint8_t* data, size_t size)
 
         if (socket.bytesToWrite() > 0) {
             if (!socket.waitForBytesWritten(1000) &&
-                socket.state() != QAbstractSocket::ConnectedState) {
+                socket.state() != LAbstractSocket::ConnectedState) {
                 return false;
             }
         }
@@ -73,10 +73,10 @@ bool sendAll(QTcpSocket& socket, const uint8_t* data, size_t size)
 struct LTcpTransport::TcpConnection {
     TcpConnection(
         quint64 connectionIdValue,
-        const std::shared_ptr<QTcpSocket>& socketValue,
-        const QHostAddress& remoteAddressValue,
+        const std::shared_ptr<LTcpSocket>& socketValue,
+        const LHostAddress& remoteAddressValue,
         quint16 remotePortValue,
-        const QString& endpointKeyValue)
+        const LString& endpointKeyValue)
         : connectionId(connectionIdValue)
         , socket(socketValue)
         , remoteAddress(remoteAddressValue)
@@ -91,10 +91,10 @@ struct LTcpTransport::TcpConnection {
     }
 
     quint64 connectionId;
-    std::shared_ptr<QTcpSocket> socket;
-    QHostAddress remoteAddress;
+    std::shared_ptr<LTcpSocket> socket;
+    LHostAddress remoteAddress;
     quint16 remotePort;
-    QString endpointKey;
+    LString endpointKey;
     std::vector<uint8_t> receiveBuffer;
     std::atomic<uint64_t> bytesSent;
     std::atomic<uint64_t> bytesReceived;
@@ -152,7 +152,7 @@ bool LTcpTransport::start()
 
     m_receiveThread = std::thread(&LTcpTransport::receiveThreadFunc, this);
 
-    QHostAddress remoteAddress;
+    LHostAddress remoteAddress;
     quint16 remotePort = 0;
     if (resolveRemoteFromConfig(remoteAddress, remotePort)) {
         ensureEndpointEntry(remoteAddress, remotePort);
@@ -201,11 +201,11 @@ void LTcpTransport::stop()
 bool LTcpTransport::sendMessage(const LMessage& message)
 {
     if (getState() != TransportState::Running) {
-        setError(QStringLiteral("Transport is not running"));
+        setError(LStringLiteral("Transport is not running"));
         return false;
     }
 
-    QHostAddress targetAddress;
+    LHostAddress targetAddress;
     quint16 targetPort = 0;
     if (resolveRemoteFromConfig(targetAddress, targetPort)) {
         return sendMessageTo(message, targetAddress, targetPort);
@@ -213,13 +213,13 @@ bool LTcpTransport::sendMessage(const LMessage& message)
 
     quint64 onlyConnectionId = 0;
     if (!getSingleConnectionId(onlyConnectionId)) {
-        setError(QStringLiteral("No default TCP remote endpoint configured"));
+        setError(LStringLiteral("No default TCP remote endpoint configured"));
         return false;
     }
 
     ConnectionPtr connection = findConnectionById(onlyConnectionId);
     if (!connection) {
-        setError(QStringLiteral("No active single TCP connection"));
+        setError(LStringLiteral("No active single TCP connection"));
         return false;
     }
 
@@ -234,16 +234,16 @@ bool LTcpTransport::sendMessage(const LMessage& message)
 }
 
 bool LTcpTransport::sendMessageTo(const LMessage& message,
-                                  const QHostAddress& targetAddress,
+                                  const LHostAddress& targetAddress,
                                   quint16 targetPort)
 {
     if (getState() != TransportState::Running) {
-        setError(QStringLiteral("Transport is not running"));
+        setError(LStringLiteral("Transport is not running"));
         return false;
     }
 
     if (targetAddress.isNull() || targetPort == 0) {
-        setError(QStringLiteral("Invalid target endpoint"));
+        setError(LStringLiteral("Invalid target endpoint"));
         return false;
     }
 
@@ -253,7 +253,7 @@ bool LTcpTransport::sendMessageTo(const LMessage& message,
     if (!connection) {
         const bool connectedNow = connectToHost(targetAddress, targetPort);
         if (!connectedNow && !shouldAutoReconnect()) {
-            setError(QStringLiteral("Failed to connect target endpoint and autoReconnect is disabled"));
+            setError(LStringLiteral("Failed to connect target endpoint and autoReconnect is disabled"));
             return false;
         }
         connection = findConnection(targetAddress, targetPort);
@@ -267,26 +267,26 @@ bool LTcpTransport::sendMessageTo(const LMessage& message,
 
 bool LTcpTransport::broadcastMessage(const LMessage& message, quint16 broadcastPort)
 {
-    Q_UNUSED(broadcastPort)
+    L_UNUSED(broadcastPort)
 
     if (getState() != TransportState::Running) {
-        setError(QStringLiteral("Transport is not running"));
+        setError(LStringLiteral("Transport is not running"));
         return false;
     }
 
     const LByteBuffer serialized = message.serialize();
     std::vector<uint8_t> bytes(serialized.data(), serialized.data() + serialized.size());
-    return enqueueSendData(std::move(bytes), 0, QHostAddress(), 0, true);
+    return enqueueSendData(std::move(bytes), 0, LHostAddress(), 0, true);
 }
 
-bool LTcpTransport::connectToHost(const QHostAddress& address, quint16 port)
+bool LTcpTransport::connectToHost(const LHostAddress& address, quint16 port)
 {
     if (address.isNull() || port == 0) {
-        setError(QStringLiteral("Invalid remote endpoint"));
+        setError(LStringLiteral("Invalid remote endpoint"));
         return false;
     }
 
-    const QString endpointKey = makeEndpointKey(address, port);
+    const LString endpointKey = makeEndpointKey(address, port);
     const auto now = std::chrono::steady_clock::now();
 
     quint64 existingConnectionId = 0;
@@ -318,31 +318,31 @@ bool LTcpTransport::connectToHost(const QHostAddress& address, quint16 port)
         }
     }
 
-    auto socket = std::make_shared<QTcpSocket>();
+    auto socket = std::make_shared<LTcpSocket>();
 
     const TransportConfig config = getConfig();
     if (config.receiveBufferSize > 0) {
         socket->setSocketOption(
-            QAbstractSocket::ReceiveBufferSizeSocketOption,
+            LAbstractSocket::ReceiveBufferSizeSocketOption,
             config.receiveBufferSize
         );
     }
     if (config.sendBufferSize > 0) {
         socket->setSocketOption(
-            QAbstractSocket::SendBufferSizeSocketOption,
+            LAbstractSocket::SendBufferSizeSocketOption,
             config.sendBufferSize
         );
     }
 
     socket->connectToHost(address, port);
     if (!socket->waitForConnected(3000)) {
-        const QString errorText = QStringLiteral("TCP connect failed: %1").arg(socket->errorString());
+        const LString errorText = LStringLiteral("TCP connect failed: %1").arg(socket->errorString());
         markEndpointFailure(endpointKey, errorText);
         setError(errorText);
         return false;
     }
 
-    QThread* networkThread = m_networkThread.load();
+    LThread* networkThread = m_networkThread.load();
     for (int i = 0; i < 20 && networkThread == nullptr; ++i) {
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
         networkThread = m_networkThread.load();
@@ -355,7 +355,7 @@ bool LTcpTransport::connectToHost(const QHostAddress& address, quint16 port)
     if (connectionId == 0) {
         socket->disconnectFromHost();
         socket->close();
-        const QString errorText = QStringLiteral("Connection limit reached");
+        const LString errorText = LStringLiteral("Connection limit reached");
         markEndpointFailure(endpointKey, errorText);
         setError(errorText);
         return false;
@@ -367,7 +367,7 @@ bool LTcpTransport::connectToHost(const QHostAddress& address, quint16 port)
 
 void LTcpTransport::disconnect(quint64 connectionId)
 {
-    removeConnection(connectionId, QStringLiteral("manual disconnect"), false);
+    removeConnection(connectionId, LStringLiteral("manual disconnect"), false);
 }
 
 void LTcpTransport::disconnectAll()
@@ -382,7 +382,7 @@ void LTcpTransport::disconnectAll()
     }
 
     for (const quint64 id : allIds) {
-        removeConnection(id, QStringLiteral("disconnect all"), false);
+        removeConnection(id, LStringLiteral("disconnect all"), false);
     }
 }
 
@@ -421,17 +421,17 @@ bool LTcpTransport::initializeServer()
 {
     const TransportConfig config = getConfig();
 
-    QHostAddress bindAddress = config.bindAddress.isEmpty()
-        ? QHostAddress::AnyIPv4
-        : QHostAddress(config.bindAddress);
+    LHostAddress bindAddress = config.bindAddress.isEmpty()
+        ? LHostAddress::AnyIPv4
+        : LHostAddress(config.bindAddress);
     if (bindAddress.isNull()) {
-        setError(QStringLiteral("Bind address must be valid"));
+        setError(LStringLiteral("Bind address must be valid"));
         return false;
     }
 
-    auto server = std::make_shared<QTcpServer>();
+    auto server = std::make_shared<LTcpServer>();
     if (!server->listen(bindAddress, config.bindPort)) {
-        setError(QStringLiteral("TCP listen failed: %1").arg(server->errorString()));
+        setError(LStringLiteral("TCP listen failed: %1").arg(server->errorString()));
         return false;
     }
 
@@ -446,7 +446,7 @@ bool LTcpTransport::initializeServer()
 
 void LTcpTransport::closeServer()
 {
-    std::shared_ptr<QTcpServer> server;
+    std::shared_ptr<LTcpServer> server;
     {
         std::lock_guard<std::mutex> lock(m_serverMutex);
         server = std::move(m_server);
@@ -461,7 +461,7 @@ void LTcpTransport::closeServer()
 void LTcpTransport::acceptThreadFunc()
 {
     // The TCP accept path is integrated into receiveThreadFunc() so that
-    // all QTcpServer/QTcpSocket operations run on a single thread.
+    // all LTcpServer/LTcpSocket operations run on a single thread.
 }
 
 void LTcpTransport::receiveThreadFunc()
@@ -471,43 +471,43 @@ void LTcpTransport::receiveThreadFunc()
         ConnectionPtr connection;
     };
 
-    m_networkThread.store(QThread::currentThread());
+    m_networkThread.store(LThread::currentThread());
 
-    std::shared_ptr<QTcpServer> server;
+    std::shared_ptr<LTcpServer> server;
     {
         std::lock_guard<std::mutex> lock(m_serverMutex);
         server = m_server;
     }
-    if (server && server->thread() != QThread::currentThread()) {
-        server->moveToThread(QThread::currentThread());
+    if (server && server->thread() != LThread::currentThread()) {
+        server->moveToThread(LThread::currentThread());
     }
 
     while (m_running.load()) {
         if (server && server->waitForNewConnection(5)) {
             while (server->hasPendingConnections()) {
-                QTcpSocket* pending = server->nextPendingConnection();
+                LTcpSocket* pending = server->nextPendingConnection();
                 if (!pending) {
                     break;
                 }
 
                 pending->setParent(nullptr);
-                std::shared_ptr<QTcpSocket> socket(pending);
+                std::shared_ptr<LTcpSocket> socket(pending);
 
                 const TransportConfig config = getConfig();
                 if (config.receiveBufferSize > 0) {
                     socket->setSocketOption(
-                        QAbstractSocket::ReceiveBufferSizeSocketOption,
+                        LAbstractSocket::ReceiveBufferSizeSocketOption,
                         config.receiveBufferSize
                     );
                 }
                 if (config.sendBufferSize > 0) {
                     socket->setSocketOption(
-                        QAbstractSocket::SendBufferSizeSocketOption,
+                        LAbstractSocket::SendBufferSizeSocketOption,
                         config.sendBufferSize
                     );
                 }
 
-                const QString endpointKey = makeEndpointKey(socket->peerAddress(), socket->peerPort());
+                const LString endpointKey = makeEndpointKey(socket->peerAddress(), socket->peerPort());
                 if (addConnection(socket, socket->peerAddress(), socket->peerPort(), endpointKey) == 0) {
                     socket->disconnectFromHost();
                     socket->close();
@@ -535,7 +535,7 @@ void LTcpTransport::receiveThreadFunc()
         bool hadData = false;
 
         for (const SocketEntry& entry : entries) {
-            QByteArray incoming;
+            LByteArray incoming;
             bool shouldRemove = false;
 
             {
@@ -543,7 +543,7 @@ void LTcpTransport::receiveThreadFunc()
                 if (!entry.connection->connected.load() || !entry.connection->socket) {
                     shouldRemove = true;
                 } else {
-                    QTcpSocket& socket = *entry.connection->socket;
+                    LTcpSocket& socket = *entry.connection->socket;
 
                     if (socket.bytesAvailable() <= 0) {
                         socket.waitForReadyRead(10);
@@ -554,14 +554,14 @@ void LTcpTransport::receiveThreadFunc()
                         while (socket.bytesAvailable() > 0) {
                             incoming.append(socket.readAll());
                         }
-                    } else if (socket.state() != QAbstractSocket::ConnectedState) {
+                    } else if (socket.state() != LAbstractSocket::ConnectedState) {
                         shouldRemove = true;
                     }
                 }
             }
 
             if (shouldRemove) {
-                removeConnection(entry.connectionId, QStringLiteral("socket state changed"), true);
+                removeConnection(entry.connectionId, LStringLiteral("socket state changed"), true);
                 continue;
             }
 
@@ -600,7 +600,7 @@ void LTcpTransport::sendThreadFunc()
 bool LTcpTransport::enqueueSendData(
     std::vector<uint8_t>&& data,
     quint64 connectionId,
-    const QHostAddress& targetAddress,
+    const LHostAddress& targetAddress,
     quint16 targetPort,
     bool broadcast)
 {
@@ -640,7 +640,7 @@ bool LTcpTransport::sendToConnection(quint64 connectionId, const std::vector<uin
         std::lock_guard<std::mutex> connLock(connection->mutex);
         if (!connection->connected.load() || !connection->socket) {
             shouldRemove = true;
-        } else if (connection->socket->state() != QAbstractSocket::ConnectedState) {
+        } else if (connection->socket->state() != LAbstractSocket::ConnectedState) {
             shouldRemove = true;
         } else if (sendAll(*connection->socket, data.data(), data.size())) {
             connection->bytesSent.fetch_add(static_cast<uint64_t>(data.size()));
@@ -654,15 +654,15 @@ bool LTcpTransport::sendToConnection(quint64 connectionId, const std::vector<uin
     }
 
     if (shouldRemove) {
-        removeConnection(connectionId, QStringLiteral("write failed"), true);
+        removeConnection(connectionId, LStringLiteral("write failed"), true);
     }
     return false;
 }
 
-quint64 LTcpTransport::addConnection(const std::shared_ptr<QTcpSocket>& socket,
-                                     const QHostAddress& remoteAddress,
+quint64 LTcpTransport::addConnection(const std::shared_ptr<LTcpSocket>& socket,
+                                     const LHostAddress& remoteAddress,
                                      quint16 remotePort,
-                                     const QString& endpointKey)
+                                     const LString& endpointKey)
 {
     if (!socket) {
         return 0;
@@ -705,7 +705,7 @@ quint64 LTcpTransport::addConnection(const std::shared_ptr<QTcpSocket>& socket,
 
 void LTcpTransport::removeConnection(
     quint64 connectionId,
-    const QString& reason,
+    const LString& reason,
     bool scheduleReconnect)
 {
     ConnectionPtr connection;
@@ -747,7 +747,7 @@ void LTcpTransport::removeConnection(
     }
 }
 
-LTcpTransport::ConnectionPtr LTcpTransport::findConnection(const QHostAddress& address, quint16 port)
+LTcpTransport::ConnectionPtr LTcpTransport::findConnection(const LHostAddress& address, quint16 port)
 {
     std::lock_guard<std::mutex> lock(m_connectionsMutex);
     for (const auto& pair : m_connections) {
@@ -771,14 +771,14 @@ LTcpTransport::ConnectionPtr LTcpTransport::findConnectionById(quint64 connectio
     return it->second;
 }
 
-bool LTcpTransport::resolveRemoteFromConfig(QHostAddress& targetAddress, quint16& targetPort) const
+bool LTcpTransport::resolveRemoteFromConfig(LHostAddress& targetAddress, quint16& targetPort) const
 {
     const TransportConfig config = getConfig();
     if (config.remoteAddress.isEmpty() || config.remotePort == 0) {
         return false;
     }
 
-    const QHostAddress parsed(config.remoteAddress);
+    const LHostAddress parsed(config.remoteAddress);
     if (parsed.isNull()) {
         return false;
     }
@@ -893,7 +893,7 @@ void LTcpTransport::processSendQueue()
         }
 
         if (connectionId == 0 && !task.targetAddress.isNull() && task.targetPort != 0) {
-            const QString endpointKey = makeEndpointKey(task.targetAddress, task.targetPort);
+            const LString endpointKey = makeEndpointKey(task.targetAddress, task.targetPort);
             if (canAttemptConnectNow(endpointKey)) {
                 (void)connectToHost(task.targetAddress, task.targetPort);
                 (void)getEndpointConnectionId(endpointKey, connectionId);
@@ -908,7 +908,7 @@ void LTcpTransport::processSendQueue()
                                  std::chrono::milliseconds(getReconnectMinMs());
                 (void)pushTaskWithPolicy(std::move(task), false);
             } else {
-                setError(QStringLiteral("No connection available for queued TCP message"));
+                setError(LStringLiteral("No connection available for queued TCP message"));
             }
             continue;
         }
@@ -926,7 +926,7 @@ void LTcpTransport::processSendQueue()
             continue;
         }
 
-        setError(QStringLiteral("send queued TCP message failed"));
+        setError(LStringLiteral("send queued TCP message failed"));
     }
 }
 
@@ -936,7 +936,7 @@ void LTcpTransport::processReconnects()
         return;
     }
 
-    std::vector<std::pair<QHostAddress, quint16>> candidates;
+    std::vector<std::pair<LHostAddress, quint16>> candidates;
     const auto now = std::chrono::steady_clock::now();
     {
         std::lock_guard<std::mutex> lock(m_endpointMutex);
@@ -962,9 +962,9 @@ void LTcpTransport::processReconnects()
     }
 }
 
-QString LTcpTransport::makeEndpointKey(const QHostAddress& address, quint16 port)
+LString LTcpTransport::makeEndpointKey(const LHostAddress& address, quint16 port)
 {
-    return QStringLiteral("%1:%2").arg(address.toString()).arg(port);
+    return LStringLiteral("%1:%2").arg(address.toString()).arg(port);
 }
 
 bool LTcpTransport::shouldAutoReconnect() const
@@ -1004,13 +1004,13 @@ int LTcpTransport::computeNextBackoffMs(int currentDelayMs) const
     return std::max(minMs, static_cast<int>(scaled));
 }
 
-void LTcpTransport::ensureEndpointEntry(const QHostAddress& address, quint16 port)
+void LTcpTransport::ensureEndpointEntry(const LHostAddress& address, quint16 port)
 {
     if (address.isNull() || port == 0) {
         return;
     }
 
-    const QString endpointKey = makeEndpointKey(address, port);
+    const LString endpointKey = makeEndpointKey(address, port);
     std::lock_guard<std::mutex> lock(m_endpointMutex);
     EndpointStateEntry& entry = m_endpointStates[endpointKey];
     entry.address = address;
@@ -1020,7 +1020,7 @@ void LTcpTransport::ensureEndpointEntry(const QHostAddress& address, quint16 por
     }
 }
 
-void LTcpTransport::markEndpointConnected(const QString& endpointKey, quint64 connectionId)
+void LTcpTransport::markEndpointConnected(const LString& endpointKey, quint64 connectionId)
 {
     if (endpointKey.isEmpty()) {
         return;
@@ -1042,7 +1042,7 @@ void LTcpTransport::markEndpointConnected(const QString& endpointKey, quint64 co
     entry.lastError.clear();
 }
 
-void LTcpTransport::markEndpointFailure(const QString& endpointKey, const QString& error)
+void LTcpTransport::markEndpointFailure(const LString& endpointKey, const LString& error)
 {
     if (endpointKey.isEmpty()) {
         return;
@@ -1071,7 +1071,7 @@ void LTcpTransport::markEndpointFailure(const QString& endpointKey, const QStrin
     entry.nextRetryAt = entry.lastStateChangeAt + std::chrono::milliseconds(entry.reconnectDelayMs);
 }
 
-bool LTcpTransport::getEndpointConnectionId(const QString& endpointKey, quint64& connectionId) const
+bool LTcpTransport::getEndpointConnectionId(const LString& endpointKey, quint64& connectionId) const
 {
     if (endpointKey.isEmpty()) {
         return false;
@@ -1090,7 +1090,7 @@ bool LTcpTransport::getEndpointConnectionId(const QString& endpointKey, quint64&
     return true;
 }
 
-bool LTcpTransport::canAttemptConnectNow(const QString& endpointKey) const
+bool LTcpTransport::canAttemptConnectNow(const LString& endpointKey) const
 {
     if (endpointKey.isEmpty()) {
         return false;
@@ -1131,7 +1131,7 @@ bool LTcpTransport::pushTaskWithPolicy(SendTask&& task, bool front)
             logQueueDrop("drop_newest", m_sendQueue.size(), dropped);
             return false;
         } else {
-            setError(QStringLiteral("send queue overflow (fail-fast)"));
+            setError(LStringLiteral("send queue overflow (fail-fast)"));
             logQueueDrop("fail_fast", m_sendQueue.size(), dropped);
             return false;
         }
@@ -1154,7 +1154,7 @@ void LTcpTransport::logQueueDrop(const char* reason, size_t queueSize, uint64_t 
     }
     m_lastQueueDropLogAt = now;
 
-    qWarning() << "[tcp] send queue overflow"
+    lWarning() << "[tcp] send queue overflow"
                << "reason=" << reason
                << "queueSize=" << static_cast<qulonglong>(queueSize)
                << "dropCount=" << static_cast<qulonglong>(dropCount);

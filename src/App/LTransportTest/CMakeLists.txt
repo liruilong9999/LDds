@@ -5,9 +5,6 @@ include(${ROOT_DIR}/cmake/module.cmake)
 set(AbsolutePathProject ${CMAKE_CURRENT_SOURCE_DIR})
 get_filename_component(ProjectName ${AbsolutePathProject} NAME)
 
-# Qt 库
-set(QT_LIBRARY_LIST "Core" "Network")
-
 # 链接库
 set(SELF_LIBRARY_LIST "LDdsCore")
 

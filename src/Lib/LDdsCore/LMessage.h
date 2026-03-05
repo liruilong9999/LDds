@@ -15,10 +15,9 @@
 #include <string>
 #include <vector>
 
-#include <QHostAddress>
-
 #include "LByteBuffer.h"
 #include "LDds_Global.h"
+#include "LQtCompat.h"
 
 namespace LDdsFramework {
 
@@ -306,8 +305,8 @@ public:
     /**
      * @brief 获取/设置发送方地址端口（接收路径填充）。
      */
-    QHostAddress getSenderAddress() const noexcept;
-    void setSenderAddress(const QHostAddress& address) noexcept;
+    LHostAddress getSenderAddress() const noexcept;
+    void setSenderAddress(const LHostAddress& address) noexcept;
 
     quint16 getSenderPort() const noexcept;
     void setSenderPort(quint16 port) noexcept;
@@ -329,7 +328,7 @@ private:
     uint64_t m_windowStart;
     uint32_t m_windowSize;
     std::vector<uint8_t> m_payload;
-    QHostAddress m_senderAddress;
+    LHostAddress m_senderAddress;
     quint16 m_senderPort;
 };
 

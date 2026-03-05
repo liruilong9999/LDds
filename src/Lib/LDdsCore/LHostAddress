@@ -1,0 +1,6 @@
+﻿#ifndef LQT_SHIM_QHOSTADDRESS_H
+#define LQT_SHIM_QHOSTADDRESS_H
+
+#include "LQtCompat.h"
+
+#endif // LQT_SHIM_QHOSTADDRESS_H

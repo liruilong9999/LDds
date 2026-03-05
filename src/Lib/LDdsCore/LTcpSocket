@@ -1,0 +1,339 @@
+#ifndef LQT_COMPAT_QTCPSOCKET_H
+#define LQT_COMPAT_QTCPSOCKET_H
+
+#include "LAbstractSocket"
+#include "LByteArray"
+#include "LThread"
+#include "LSocketUtil.h"
+
+#include <mutex>
+#include <vector>
+
+class LTcpSocket : public LAbstractSocket
+{
+public:
+    LTcpSocket()
+        : LAbstractSocket()
+        , socket_(LDdsFramework::Net::kInvalidSocket)
+        , peerAddress_()
+        , peerPort_(0)
+        , connecting_(false)
+        , thread_(LThread::currentThread())
+        , readBuffer_()
+    {
+    }
+
+    LTcpSocket(LDdsFramework::Net::SocketHandle socket,
+               const LHostAddress& peerAddress,
+               quint16 peerPort)
+        : LAbstractSocket()
+        , socket_(socket)
+        , peerAddress_(peerAddress)
+        , peerPort_(peerPort)
+        , connecting_(false)
+        , thread_(LThread::currentThread())
+        , readBuffer_()
+    {
+        setState(ConnectedState);
+        applyStoredSocketOptions();
+        std::string error;
+        (void)LDdsFramework::Net::setNonBlocking(socket_, true, &error);
+    }
+
+    ~LTcpSocket() override
+    {
+        close();
+    }
+
+    void setParent(void*)
+    {
+    }
+
+    void connectToHost(const LHostAddress& address, quint16 port)
+    {
+        close();
+
+        std::string runtimeError;
+        if (!LDdsFramework::Net::SocketRuntime::ensureInitialized(&runtimeError))
+        {
+            setErrorString(LStringLiteral("socket runtime init failed: ") + LString::fromStdString(runtimeError));
+            return;
+        }
+
+        socket_ = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (!LDdsFramework::Net::isSocketValid(socket_))
+        {
+            setErrorString(LString::fromStdString(LDdsFramework::Net::errorCodeToString(
+                LDdsFramework::Net::getLastErrorCode())));
+            return;
+        }
+
+        applyStoredSocketOptions();
+
+        std::string optionError;
+        if (!LDdsFramework::Net::setNonBlocking(socket_, true, &optionError))
+        {
+            setErrorString(LString::fromStdString(optionError));
+            close();
+            return;
+        }
+
+        const sockaddr_in remote = LDdsFramework::Net::toSockAddr(address, port);
+        const int result = ::connect(socket_, reinterpret_cast<const sockaddr*>(&remote), sizeof(remote));
+        if (result == 0)
+        {
+            peerAddress_ = address;
+            peerPort_ = port;
+            connecting_ = false;
+            setState(ConnectedState);
+            return;
+        }
+
+        const int errorCode = LDdsFramework::Net::getLastErrorCode();
+        if (LDdsFramework::Net::isInProgressError(errorCode))
+        {
+            peerAddress_ = address;
+            peerPort_ = port;
+            connecting_ = true;
+            setState(UnconnectedState);
+            return;
+        }
+
+        setErrorString(LString::fromStdString(LDdsFramework::Net::errorCodeToString(errorCode)));
+        close();
+    }
+
+    bool waitForConnected(int timeoutMs)
+    {
+        if (state() == ConnectedState)
+        {
+            return true;
+        }
+
+        if (!connecting_ || !LDdsFramework::Net::isSocketValid(socket_))
+        {
+            return false;
+        }
+
+        if (!LDdsFramework::Net::waitForSocketWritable(socket_, timeoutMs))
+        {
+            setErrorString(LStringLiteral("connect timeout"));
+            close();
+            return false;
+        }
+
+        connecting_ = false;
+        setState(ConnectedState);
+        return true;
+    }
+
+    qint64 write(const char* data, qint64 size)
+    {
+        if (data == nullptr || size <= 0)
+        {
+            return 0;
+        }
+
+        if (state() != ConnectedState || !LDdsFramework::Net::isSocketValid(socket_))
+        {
+            return -1;
+        }
+
+        const int result = static_cast<int>(::send(
+            socket_,
+            data,
+            static_cast<int>(size),
+            0));
+        if (result > 0)
+        {
+            return static_cast<qint64>(result);
+        }
+
+        if (result == 0)
+        {
+            return 0;
+        }
+
+        const int errorCode = LDdsFramework::Net::getLastErrorCode();
+        if (LDdsFramework::Net::isWouldBlockError(errorCode))
+        {
+            return 0;
+        }
+
+        setErrorString(LString::fromStdString(LDdsFramework::Net::errorCodeToString(errorCode)));
+        close();
+        return -1;
+    }
+
+    bool waitForBytesWritten(int timeoutMs)
+    {
+        if (state() != ConnectedState || !LDdsFramework::Net::isSocketValid(socket_))
+        {
+            return false;
+        }
+        return LDdsFramework::Net::waitForSocketWritable(socket_, timeoutMs);
+    }
+
+    qint64 bytesToWrite() const
+    {
+        return 0;
+    }
+
+    bool waitForReadyRead(int timeoutMs)
+    {
+        if (!LDdsFramework::Net::isSocketValid(socket_))
+        {
+            return false;
+        }
+
+        if (!readBuffer_.empty())
+        {
+            return true;
+        }
+
+        const int ready = LDdsFramework::Net::selectRead(socket_, timeoutMs);
+        if (ready <= 0)
+        {
+            return false;
+        }
+
+        return pullReadableData();
+    }
+
+    qint64 bytesAvailable()
+    {
+        if (!readBuffer_.empty())
+        {
+            return static_cast<qint64>(readBuffer_.size());
+        }
+        if (!LDdsFramework::Net::isSocketValid(socket_))
+        {
+            return 0;
+        }
+
+        if (LDdsFramework::Net::selectRead(socket_, 0) > 0)
+        {
+            (void)pullReadableData();
+        }
+        return static_cast<qint64>(readBuffer_.size());
+    }
+
+    LByteArray readAll()
+    {
+        if (readBuffer_.empty())
+        {
+            (void)pullReadableData();
+        }
+
+        LByteArray result;
+        if (!readBuffer_.empty())
+        {
+            result.append(readBuffer_.data(), static_cast<int>(readBuffer_.size()));
+            readBuffer_.clear();
+        }
+        return result;
+    }
+
+    void disconnectFromHost()
+    {
+        close();
+    }
+
+    void close()
+    {
+        connecting_ = false;
+        readBuffer_.clear();
+        LDdsFramework::Net::closeSocketQuietly(socket_);
+        setState(UnconnectedState);
+    }
+
+    LHostAddress peerAddress() const
+    {
+        return peerAddress_;
+    }
+
+    quint16 peerPort() const
+    {
+        return peerPort_;
+    }
+
+    LThread* thread() const
+    {
+        return thread_;
+    }
+
+    void moveToThread(LThread* targetThread)
+    {
+        if (targetThread != nullptr)
+        {
+            thread_ = targetThread;
+        }
+    }
+
+private:
+    bool pullReadableData()
+    {
+        if (!LDdsFramework::Net::isSocketValid(socket_))
+        {
+            return false;
+        }
+
+        bool receivedAny = false;
+        std::vector<char> chunk(8192);
+        while (true)
+        {
+            const int recvBytes = static_cast<int>(::recv(
+                socket_,
+                chunk.data(),
+                static_cast<int>(chunk.size()),
+                0));
+
+            if (recvBytes > 0)
+            {
+                receivedAny = true;
+                readBuffer_.insert(readBuffer_.end(), chunk.begin(), chunk.begin() + recvBytes);
+                continue;
+            }
+
+            if (recvBytes == 0)
+            {
+                close();
+                break;
+            }
+
+            const int errorCode = LDdsFramework::Net::getLastErrorCode();
+            if (LDdsFramework::Net::isWouldBlockError(errorCode))
+            {
+                break;
+            }
+
+            setErrorString(LString::fromStdString(LDdsFramework::Net::errorCodeToString(errorCode)));
+            close();
+            break;
+        }
+
+        return receivedAny;
+    }
+
+    void applyStoredSocketOptions()
+    {
+        if (!LDdsFramework::Net::isSocketValid(socket_))
+        {
+            return;
+        }
+
+        std::string error;
+        (void)LDdsFramework::Net::setSocketBufferSize(socket_, SO_RCVBUF, receiveBufferSize(), &error);
+        (void)LDdsFramework::Net::setSocketBufferSize(socket_, SO_SNDBUF, sendBufferSize(), &error);
+    }
+
+private:
+    LDdsFramework::Net::SocketHandle socket_;
+    LHostAddress peerAddress_;
+    quint16 peerPort_;
+    bool connecting_;
+    LThread* thread_;
+    std::vector<char> readBuffer_;
+};
+
+#endif // LQT_COMPAT_QTCPSOCKET_H

@@ -280,9 +280,9 @@ std::vector<uint8_t> toPayloadBytes(const std::string& payload)
 TransportConfig toConfig(const Options& options)
 {
     TransportConfig config;
-    config.bindAddress = QString::fromStdString(options.bindAddress);
+    config.bindAddress = LString::fromStdString(options.bindAddress);
     config.bindPort = options.bindPort;
-    config.remoteAddress = QString::fromStdString(options.remoteAddress);
+    config.remoteAddress = LString::fromStdString(options.remoteAddress);
     config.remotePort = options.remotePort;
     config.enableBroadcast = options.enableBroadcast;
     return config;
@@ -299,7 +299,7 @@ int runSender(const Options& options)
     }
 
     if (options.enableBroadcast) {
-        const QHostAddress broadcastAddress = QHostAddress::Broadcast;
+        const LHostAddress broadcastAddress = LHostAddress::Broadcast;
         if (!transport->setDefaultRemote(broadcastAddress, options.remotePort)) {
             std::cerr << "设置广播默认远端失败: "
                       << transport->getLastError().toStdString() << "\n";
@@ -307,7 +307,7 @@ int runSender(const Options& options)
             return EXIT_FAILURE;
         }
     } else {
-        const QHostAddress remoteAddress(QString::fromStdString(options.remoteAddress));
+        const LHostAddress remoteAddress(LString::fromStdString(options.remoteAddress));
         if (!transport->setDefaultRemote(remoteAddress, options.remotePort)) {
             std::cerr << "设置默认远端失败: "
                       << transport->getLastError().toStdString() << "\n";
@@ -353,7 +353,7 @@ int runReceiver(const Options& options)
     std::condition_variable waitCv;
 
     transport->setReceiveCallback(
-        [&](const LMessage& message, const QHostAddress& sender, quint16 senderPort) {
+        [&](const LMessage& message, const LHostAddress& sender, quint16 senderPort) {
             const int current = receivedCount.fetch_add(1) + 1;
             const std::string payloadText(
                 message.getPayload().begin(),

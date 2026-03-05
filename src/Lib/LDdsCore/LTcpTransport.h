@@ -18,9 +18,9 @@
 #include <thread>
 #include <vector>
 
-class QTcpServer;
-class QTcpSocket;
-class QThread;
+class LTcpServer;
+class LTcpSocket;
+class LThread;
 
 namespace LDdsFramework {
 
@@ -65,7 +65,7 @@ public:
      * @brief 发送消息到指定远端（不存在连接则尝试建立）。
      */
     bool sendMessageTo(const LMessage& message,
-                       const QHostAddress& targetAddress,
+                       const LHostAddress& targetAddress,
                        quint16 targetPort);
     /**
      * @brief 将消息广播到所有已建立连接。
@@ -75,7 +75,7 @@ public:
     /**
      * @brief 主动连接远端主机。
      */
-    bool connectToHost(const QHostAddress& address, quint16 port);
+    bool connectToHost(const LHostAddress& address, quint16 port);
     /**
      * @brief 断开指定连接。
      */
@@ -107,7 +107,7 @@ private:
     };
 
     struct EndpointStateEntry {
-        QHostAddress address;
+        LHostAddress address;
         quint16 port;
         EndpointConnectionState state;
         quint64 connectionId;
@@ -115,7 +115,7 @@ private:
         std::chrono::steady_clock::time_point nextRetryAt;
         std::chrono::steady_clock::time_point lastStateChangeAt;
         uint64_t failureCount;
-        QString lastError;
+        LString lastError;
 
         EndpointStateEntry()
             : address()
@@ -134,8 +134,8 @@ private:
     struct SendTask {
         std::vector<uint8_t> data;
         quint64 connectionId;
-        QString endpointKey;
-        QHostAddress targetAddress;
+        LString endpointKey;
+        LHostAddress targetAddress;
         quint16 targetPort;
         bool broadcast;
         std::chrono::steady_clock::time_point notBefore;
@@ -164,44 +164,44 @@ private:
 
     bool enqueueSendData(std::vector<uint8_t>&& data,
                          quint64 connectionId,
-                         const QHostAddress& targetAddress,
+                         const LHostAddress& targetAddress,
                          quint16 targetPort,
                          bool broadcast);
     bool sendToConnection(quint64 connectionId, const std::vector<uint8_t>& data);
     void processSendQueue();
     void processReconnects();
 
-    quint64 addConnection(const std::shared_ptr<QTcpSocket>& socket,
-                          const QHostAddress& remoteAddress,
+    quint64 addConnection(const std::shared_ptr<LTcpSocket>& socket,
+                          const LHostAddress& remoteAddress,
                           quint16 remotePort,
-                          const QString& endpointKey);
-    void removeConnection(quint64 connectionId, const QString& reason, bool scheduleReconnect);
-    ConnectionPtr findConnection(const QHostAddress& address, quint16 port);
+                          const LString& endpointKey);
+    void removeConnection(quint64 connectionId, const LString& reason, bool scheduleReconnect);
+    ConnectionPtr findConnection(const LHostAddress& address, quint16 port);
     ConnectionPtr findConnectionById(quint64 connectionId) const;
 
-    bool resolveRemoteFromConfig(QHostAddress& targetAddress, quint16& targetPort) const;
+    bool resolveRemoteFromConfig(LHostAddress& targetAddress, quint16& targetPort) const;
     bool getSingleConnectionId(quint64& connectionId) const;
     void processConnectionBuffer(const ConnectionPtr& connection);
-    static QString makeEndpointKey(const QHostAddress& address, quint16 port);
+    static LString makeEndpointKey(const LHostAddress& address, quint16 port);
     bool shouldAutoReconnect() const;
     int getReconnectMinMs() const;
     int getReconnectMaxMs() const;
     double getReconnectMultiplier() const;
     int computeNextBackoffMs(int currentDelayMs) const;
-    void ensureEndpointEntry(const QHostAddress& address, quint16 port);
-    void markEndpointConnected(const QString& endpointKey, quint64 connectionId);
-    void markEndpointFailure(const QString& endpointKey, const QString& error);
-    bool getEndpointConnectionId(const QString& endpointKey, quint64& connectionId) const;
-    bool canAttemptConnectNow(const QString& endpointKey) const;
+    void ensureEndpointEntry(const LHostAddress& address, quint16 port);
+    void markEndpointConnected(const LString& endpointKey, quint64 connectionId);
+    void markEndpointFailure(const LString& endpointKey, const LString& error);
+    bool getEndpointConnectionId(const LString& endpointKey, quint64& connectionId) const;
+    bool canAttemptConnectNow(const LString& endpointKey) const;
     bool pushTaskWithPolicy(SendTask&& task, bool front);
     void logQueueDrop(const char* reason, size_t queueSize, uint64_t dropCount) const;
 
 private:
-    std::shared_ptr<QTcpServer> m_server;
+    std::shared_ptr<LTcpServer> m_server;
     mutable std::mutex m_serverMutex;
     std::map<quint64, ConnectionPtr> m_connections;
     mutable std::mutex m_connectionsMutex;
-    std::map<QString, EndpointStateEntry> m_endpointStates;
+    std::map<LString, EndpointStateEntry> m_endpointStates;
     mutable std::mutex m_endpointMutex;
 
     std::thread m_acceptThread;
@@ -215,7 +215,7 @@ private:
     std::atomic<bool> m_running;
     std::atomic<bool> m_sendThreadRunning;
     std::atomic<quint64> m_nextConnectionId;
-    std::atomic<QThread*> m_networkThread;
+    std::atomic<LThread*> m_networkThread;
     std::atomic<uint64_t> m_dropCount;
     mutable std::chrono::steady_clock::time_point m_lastQueueDropLogAt;
 };

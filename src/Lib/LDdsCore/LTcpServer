@@ -1,0 +1,193 @@
+#ifndef LQT_COMPAT_QTCPSERVER_H
+#define LQT_COMPAT_QTCPSERVER_H
+
+#include "LAbstractSocket"
+#include "LThread"
+#include "LTcpSocket"
+#include "LSocketUtil.h"
+
+#include <cstring>
+#include <deque>
+#include <string>
+
+class LTcpServer
+{
+public:
+    LTcpServer()
+        : socket_(LDdsFramework::Net::kInvalidSocket)
+        , serverPort_(0)
+        , lastError_()
+        , pendingConnections_()
+        , thread_(LThread::currentThread())
+    {
+    }
+
+    ~LTcpServer()
+    {
+        close();
+    }
+
+    bool listen(const LHostAddress& address, quint16 port)
+    {
+        close();
+
+        std::string runtimeError;
+        if (!LDdsFramework::Net::SocketRuntime::ensureInitialized(&runtimeError))
+        {
+            lastError_ = LStringLiteral("socket runtime init failed: ") + LString::fromStdString(runtimeError);
+            return false;
+        }
+
+        socket_ = ::socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (!LDdsFramework::Net::isSocketValid(socket_))
+        {
+            lastError_ = LString::fromStdString(LDdsFramework::Net::errorCodeToString(
+                LDdsFramework::Net::getLastErrorCode()));
+            return false;
+        }
+
+        const sockaddr_in bindAddr = LDdsFramework::Net::toSockAddr(address, port);
+        if (::bind(socket_, reinterpret_cast<const sockaddr*>(&bindAddr), sizeof(bindAddr)) != 0)
+        {
+            lastError_ = LString::fromStdString(LDdsFramework::Net::errorCodeToString(
+                LDdsFramework::Net::getLastErrorCode()));
+            close();
+            return false;
+        }
+
+        if (::listen(socket_, 128) != 0)
+        {
+            lastError_ = LString::fromStdString(LDdsFramework::Net::errorCodeToString(
+                LDdsFramework::Net::getLastErrorCode()));
+            close();
+            return false;
+        }
+
+        std::string optionError;
+        if (!LDdsFramework::Net::setNonBlocking(socket_, true, &optionError))
+        {
+            lastError_ = LString::fromStdString(optionError);
+            close();
+            return false;
+        }
+
+        if (!LDdsFramework::Net::tryGetBoundPort(socket_, serverPort_))
+        {
+            serverPort_ = port;
+        }
+
+        return true;
+    }
+
+    bool waitForNewConnection(int timeoutMs)
+    {
+        if (!LDdsFramework::Net::isSocketValid(socket_))
+        {
+            return false;
+        }
+
+        const int ready = LDdsFramework::Net::selectRead(socket_, timeoutMs);
+        if (ready <= 0)
+        {
+            return false;
+        }
+
+        while (true)
+        {
+            sockaddr_in remoteAddr;
+            std::memset(&remoteAddr, 0, sizeof(remoteAddr));
+#ifdef _WIN32
+            int len = static_cast<int>(sizeof(remoteAddr));
+#else
+            socklen_t len = static_cast<socklen_t>(sizeof(remoteAddr));
+#endif
+
+            LDdsFramework::Net::SocketHandle client = ::accept(
+                socket_,
+                reinterpret_cast<sockaddr*>(&remoteAddr),
+                &len);
+            if (!LDdsFramework::Net::isSocketValid(client))
+            {
+                const int errorCode = LDdsFramework::Net::getLastErrorCode();
+                if (LDdsFramework::Net::isWouldBlockError(errorCode) ||
+                    LDdsFramework::Net::isInProgressError(errorCode))
+                {
+                    break;
+                }
+                break;
+            }
+
+            std::string optionError;
+            (void)LDdsFramework::Net::setNonBlocking(client, true, &optionError);
+
+            LTcpSocket* socket = new LTcpSocket(
+                client,
+                LDdsFramework::Net::fromSockAddr(remoteAddr),
+                LDdsFramework::Net::portFromSockAddr(remoteAddr));
+            pendingConnections_.push_back(socket);
+        }
+
+        return !pendingConnections_.empty();
+    }
+
+    bool hasPendingConnections() const
+    {
+        return !pendingConnections_.empty();
+    }
+
+    LTcpSocket* nextPendingConnection()
+    {
+        if (pendingConnections_.empty())
+        {
+            return nullptr;
+        }
+
+        LTcpSocket* socket = pendingConnections_.front();
+        pendingConnections_.pop_front();
+        return socket;
+    }
+
+    quint16 serverPort() const
+    {
+        return serverPort_;
+    }
+
+    LString errorString() const
+    {
+        return lastError_;
+    }
+
+    void close()
+    {
+        LDdsFramework::Net::closeSocketQuietly(socket_);
+        serverPort_ = 0;
+
+        while (!pendingConnections_.empty())
+        {
+            delete pendingConnections_.front();
+            pendingConnections_.pop_front();
+        }
+    }
+
+    LThread* thread() const
+    {
+        return thread_;
+    }
+
+    void moveToThread(LThread* targetThread)
+    {
+        if (targetThread != nullptr)
+        {
+            thread_ = targetThread;
+        }
+    }
+
+private:
+    LDdsFramework::Net::SocketHandle socket_;
+    quint16 serverPort_;
+    LString lastError_;
+    std::deque<LTcpSocket*> pendingConnections_;
+    LThread* thread_;
+};
+
+#endif // LQT_COMPAT_QTCPSERVER_H

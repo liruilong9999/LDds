@@ -1,4 +1,4 @@
-﻿#include "LMessage.h"
+#include "LMessage.h"
 
 #include <cstring>
 
@@ -494,12 +494,12 @@ void LMessage::clear() noexcept
     m_senderPort = 0;
 }
 
-QHostAddress LMessage::getSenderAddress() const noexcept
+LHostAddress LMessage::getSenderAddress() const noexcept
 {
     return m_senderAddress;
 }
 
-void LMessage::setSenderAddress(const QHostAddress & address) noexcept
+void LMessage::setSenderAddress(const LHostAddress & address) noexcept
 {
     m_senderAddress = address;
 }

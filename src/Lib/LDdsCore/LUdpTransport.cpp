@@ -1,9 +1,9 @@
 #include "LUdpTransport.h"
 #include "LMessage.h"
 
-#include <QAbstractSocket>
-#include <QByteArray>
-#include <QUdpSocket>
+#include <LAbstractSocket>
+#include <LByteArray>
+#include <LUdpSocket>
 
 #include <chrono>
 #include <thread>
@@ -78,32 +78,32 @@ void LUdpTransport::stop()
 
 bool LUdpTransport::sendMessage(const LMessage& message)
 {
-    QHostAddress targetAddress;
+    LHostAddress targetAddress;
     quint16 targetPort = 0;
     if (!resolveRemoteFromConfig(targetAddress, targetPort)) {
-        setError(QStringLiteral("Default UDP remote endpoint is not configured"));
+        setError(LStringLiteral("Default UDP remote endpoint is not configured"));
         return false;
     }
     return sendMessageTo(message, targetAddress, targetPort);
 }
 
 bool LUdpTransport::sendMessageTo(const LMessage& message,
-                                  const QHostAddress& targetAddress,
+                                  const LHostAddress& targetAddress,
                                   quint16 targetPort)
 {
     if (getState() != TransportState::Running) {
-        setError(QStringLiteral("Transport is not running"));
+        setError(LStringLiteral("Transport is not running"));
         return false;
     }
 
     if (targetAddress.isNull() || targetPort == 0) {
-        setError(QStringLiteral("Invalid target endpoint"));
+        setError(LStringLiteral("Invalid target endpoint"));
         return false;
     }
 
     const LByteBuffer serialized = message.serialize();
     if (serialized.size() > m_maxPacketSize.load()) {
-        setError(QStringLiteral("UDP packet exceeds max packet size"));
+        setError(LStringLiteral("UDP packet exceeds max packet size"));
         return false;
     }
 
@@ -111,7 +111,7 @@ bool LUdpTransport::sendMessageTo(const LMessage& message,
     {
         std::lock_guard<std::mutex> lock(m_sendSocketMutex);
         if (!m_sendSocket) {
-            setError(QStringLiteral("UDP socket is not initialized"));
+            setError(LStringLiteral("UDP socket is not initialized"));
             return false;
         }
 
@@ -122,7 +122,7 @@ bool LUdpTransport::sendMessageTo(const LMessage& message,
             targetPort
         );
         if (sentBytes != static_cast<qint64>(serialized.size())) {
-            setError(QStringLiteral("UDP send failed: %1").arg(m_sendSocket->errorString()));
+            setError(LStringLiteral("UDP send failed: %1").arg(m_sendSocket->errorString()));
             return false;
         }
     }
@@ -135,11 +135,11 @@ bool LUdpTransport::sendMessageTo(const LMessage& message,
 bool LUdpTransport::broadcastMessage(const LMessage& message, quint16 broadcastPort)
 {
     if (!isBroadcastEnabled()) {
-        setError(QStringLiteral("UDP broadcast is disabled"));
+        setError(LStringLiteral("UDP broadcast is disabled"));
         return false;
     }
 
-    return sendMessageTo(message, QHostAddress::Broadcast, broadcastPort);
+    return sendMessageTo(message, LHostAddress::Broadcast, broadcastPort);
 }
 
 void LUdpTransport::setMaxPacketSize(size_t maxSize) noexcept
@@ -189,11 +189,11 @@ void LUdpTransport::receiveThreadFunc()
 {
     while (m_running.load()) {
         std::vector<LMessage> readyMessages;
-        std::vector<std::pair<QHostAddress, quint16>> endpoints;
+        std::vector<std::pair<LHostAddress, quint16>> endpoints;
 
         {
             std::unique_lock<std::mutex> lock(m_receiveSocketMutex);
-            QUdpSocket* socket = m_receiveSocket.get();
+            LUdpSocket* socket = m_receiveSocket.get();
             if (!socket) {
                 lock.unlock();
                 std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -215,10 +215,10 @@ void LUdpTransport::receiveThreadFunc()
                     break;
                 }
 
-                QByteArray packet;
+                LByteArray packet;
                 packet.resize(static_cast<int>(pendingSize));
 
-                QHostAddress senderAddress;
+                LHostAddress senderAddress;
                 quint16 senderPort = 0;
                 const qint64 recvBytes = socket->readDatagram(
                     packet.data(),
@@ -263,77 +263,77 @@ bool LUdpTransport::initializeSocket()
 {
     const TransportConfig config = getConfig();
 
-    QHostAddress bindAddress = config.bindAddress.isEmpty()
-        ? QHostAddress::AnyIPv4
-        : QHostAddress(config.bindAddress);
+    LHostAddress bindAddress = config.bindAddress.isEmpty()
+        ? LHostAddress::AnyIPv4
+        : LHostAddress(config.bindAddress);
     if (bindAddress.isNull()) {
-        setError(QStringLiteral("Bind address must be valid"));
+        setError(LStringLiteral("Bind address must be valid"));
         return false;
     }
 
-    auto receiveSocket = std::make_unique<QUdpSocket>();
-    auto sendSocket = std::make_unique<QUdpSocket>();
+    auto receiveSocket = std::make_unique<LUdpSocket>();
+    auto sendSocket = std::make_unique<LUdpSocket>();
 
     if (config.receiveBufferSize > 0) {
         receiveSocket->setSocketOption(
-            QAbstractSocket::ReceiveBufferSizeSocketOption,
+            LAbstractSocket::ReceiveBufferSizeSocketOption,
             config.receiveBufferSize
         );
         sendSocket->setSocketOption(
-            QAbstractSocket::ReceiveBufferSizeSocketOption,
+            LAbstractSocket::ReceiveBufferSizeSocketOption,
             config.receiveBufferSize
         );
     }
 
     if (config.sendBufferSize > 0) {
         receiveSocket->setSocketOption(
-            QAbstractSocket::SendBufferSizeSocketOption,
+            LAbstractSocket::SendBufferSizeSocketOption,
             config.sendBufferSize
         );
         sendSocket->setSocketOption(
-            QAbstractSocket::SendBufferSizeSocketOption,
+            LAbstractSocket::SendBufferSizeSocketOption,
             config.sendBufferSize
         );
     }
 
-    QAbstractSocket::BindMode bindMode = QAbstractSocket::DefaultForPlatform;
+    LAbstractSocket::BindMode bindMode = LAbstractSocket::DefaultForPlatform;
     if (config.reuseAddress) {
-        bindMode = QAbstractSocket::ShareAddress | QAbstractSocket::ReuseAddressHint;
+        bindMode = LAbstractSocket::ShareAddress | LAbstractSocket::ReuseAddressHint;
     }
 
     if (!receiveSocket->bind(bindAddress, config.bindPort, bindMode)) {
-        setError(QStringLiteral("UDP bind failed: %1").arg(receiveSocket->errorString()));
+        setError(LStringLiteral("UDP bind failed: %1").arg(receiveSocket->errorString()));
         return false;
     }
 
-    if (!sendSocket->bind(QHostAddress::AnyIPv4, 0, bindMode)) {
-        setError(QStringLiteral("UDP send socket bind failed: %1").arg(sendSocket->errorString()));
+    if (!sendSocket->bind(LHostAddress::AnyIPv4, 0, bindMode)) {
+        setError(LStringLiteral("UDP send socket bind failed: %1").arg(sendSocket->errorString()));
         return false;
     }
 
     if (config.enableMulticast) {
-        const QString multicastGroupText = config.multicastGroup.trimmed();
+        const LString multicastGroupText = config.multicastGroup.trimmed();
         if (multicastGroupText.isEmpty()) {
-            setError(QStringLiteral("Multicast is enabled but multicastGroup is empty"));
+            setError(LStringLiteral("Multicast is enabled but multicastGroup is empty"));
             return false;
         }
 
-        const QHostAddress multicastGroup(multicastGroupText);
+        const LHostAddress multicastGroup(multicastGroupText);
         if (multicastGroup.isNull() || !multicastGroup.isMulticast()) {
-            setError(QStringLiteral("Invalid multicast group: %1").arg(multicastGroupText));
+            setError(LStringLiteral("Invalid multicast group: %1").arg(multicastGroupText));
             return false;
         }
 
         if (!receiveSocket->joinMulticastGroup(multicastGroup)) {
             setError(
-                QStringLiteral("joinMulticastGroup failed (%1): %2")
+                LStringLiteral("joinMulticastGroup failed (%1): %2")
                     .arg(multicastGroupText, receiveSocket->errorString()));
             return false;
         }
 
         if (config.multicastTtl > 0) {
             sendSocket->setSocketOption(
-                QAbstractSocket::MulticastTtlOption,
+                LAbstractSocket::MulticastTtlOption,
                 config.multicastTtl
             );
         }
@@ -353,8 +353,8 @@ bool LUdpTransport::initializeSocket()
 
 void LUdpTransport::closeSocket()
 {
-    std::unique_ptr<QUdpSocket> receiveSocket;
-    std::unique_ptr<QUdpSocket> sendSocket;
+    std::unique_ptr<LUdpSocket> receiveSocket;
+    std::unique_ptr<LUdpSocket> sendSocket;
     {
         std::lock_guard<std::mutex> recvLock(m_receiveSocketMutex);
         std::lock_guard<std::mutex> sendLock(m_sendSocketMutex);
@@ -372,14 +372,14 @@ void LUdpTransport::closeSocket()
     setBoundPort(0);
 }
 
-bool LUdpTransport::resolveRemoteFromConfig(QHostAddress& targetAddress, quint16& targetPort) const
+bool LUdpTransport::resolveRemoteFromConfig(LHostAddress& targetAddress, quint16& targetPort) const
 {
     const TransportConfig config = getConfig();
     if (config.remoteAddress.isEmpty() || config.remotePort == 0) {
         return false;
     }
 
-    const QHostAddress parsed(config.remoteAddress);
+    const LHostAddress parsed(config.remoteAddress);
     if (parsed.isNull()) {
         return false;
     }

@@ -15,8 +15,8 @@
 #include <functional>
 #include <memory>
 #include <mutex>
-#include <QString>
-#include <QHostAddress>
+
+#include "LQtCompat.h"
 #include "LDds_Global.h"
 
 namespace LDdsFramework {
@@ -62,7 +62,7 @@ struct LDDSCORE_EXPORT TransportConfig {
     /**
      * @brief 本地绑定地址（如 `0.0.0.0` 或 `127.0.0.1`）。
      */
-    QString bindAddress;
+    LString bindAddress;
     /**
      * @brief 本地绑定端口。
      */
@@ -70,7 +70,7 @@ struct LDDSCORE_EXPORT TransportConfig {
     /**
      * @brief 默认远端地址（点对点发送时使用）。
      */
-    QString remoteAddress;
+    LString remoteAddress;
     /**
      * @brief 默认远端端口。
      */
@@ -154,7 +154,7 @@ struct LDDSCORE_EXPORT TransportConfig {
     /**
      * @brief 组播地址（如 `239.255.0.x`）。
      */
-    QString multicastGroup;
+    LString multicastGroup;
     /**
      * @brief 组播 TTL（生存跳数）。
      */
@@ -172,7 +172,7 @@ struct LDDSCORE_EXPORT TransportConfig {
  * @param senderAddress 发送方地址。
  * @param senderPort 发送方端口。
  */
-using ReceiveCallback = std::function<void(const LMessage&, const QHostAddress&, quint16)>;
+using ReceiveCallback = std::function<void(const LMessage&, const LHostAddress&, quint16)>;
 
 /**
  * @brief 传输状态机。
@@ -230,7 +230,7 @@ public:
     /**
      * @brief 设置默认远端地址。
      */
-    virtual bool setDefaultRemote(const QHostAddress& targetAddress, quint16 targetPort);
+    virtual bool setDefaultRemote(const LHostAddress& targetAddress, quint16 targetPort);
 
     /**
      * @brief 设置接收回调。
@@ -253,7 +253,7 @@ public:
     /**
      * @brief 获取最近一次错误信息。
      */
-    QString getLastError() const noexcept;
+    LString getLastError() const noexcept;
     /**
      * @brief 获取当前绑定端口（0 表示未绑定成功）。
      */
@@ -274,12 +274,12 @@ protected:
     /**
      * @brief 设置错误信息并将状态置为 Error。
      */
-    void setError(const QString& error);
+    void setError(const LString& error);
     /**
      * @brief 派发接收回调（若已注册）。
      */
     void notifyReceiveCallback(const LMessage& message,
-                               const QHostAddress& senderAddress,
+                               const LHostAddress& senderAddress,
                                quint16 senderPort);
     /**
      * @brief 记录本地绑定端口。
@@ -310,7 +310,7 @@ protected:
     /**
      * @brief 最近一次错误信息。
      */
-    QString m_lastError;
+    LString m_lastError;
     /**
      * @brief 错误信息读写锁。
      */

@@ -1,0 +1,272 @@
+#ifndef LQT_COMPAT_QUDPSOCKET_H
+#define LQT_COMPAT_QUDPSOCKET_H
+
+#include "LAbstractSocket"
+#include "LSocketUtil.h"
+
+#include <cstring>
+#include <deque>
+#include <vector>
+
+class LUdpSocket : public LAbstractSocket
+{
+public:
+    LUdpSocket()
+        : LAbstractSocket()
+        , socket_(LDdsFramework::Net::kInvalidSocket)
+        , localPort_(0)
+        , pending_()
+    {
+    }
+
+    ~LUdpSocket() override
+    {
+        close();
+    }
+
+    bool bind(const LHostAddress& address, quint16 port, BindMode bindMode = DefaultForPlatform)
+    {
+        close();
+
+        std::string runtimeError;
+        if (!LDdsFramework::Net::SocketRuntime::ensureInitialized(&runtimeError))
+        {
+            setErrorString(LStringLiteral("socket runtime init failed: ") + LString::fromStdString(runtimeError));
+            return false;
+        }
+
+        socket_ = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (!LDdsFramework::Net::isSocketValid(socket_))
+        {
+            setErrorString(LString::fromStdString(LDdsFramework::Net::errorCodeToString(
+                LDdsFramework::Net::getLastErrorCode())));
+            return false;
+        }
+
+        std::string optionError;
+        const bool reuse = (bindMode & LAbstractSocket::ReuseAddressHint) != 0 ||
+                           (bindMode & LAbstractSocket::ShareAddress) != 0;
+        if (reuse)
+        {
+            (void)LDdsFramework::Net::setSocketReuseAddress(socket_, true, &optionError);
+        }
+
+        (void)LDdsFramework::Net::setSocketBroadcast(socket_, true, &optionError);
+        (void)LDdsFramework::Net::setSocketBufferSize(socket_, SO_RCVBUF, receiveBufferSize(), &optionError);
+        (void)LDdsFramework::Net::setSocketBufferSize(socket_, SO_SNDBUF, sendBufferSize(), &optionError);
+        (void)LDdsFramework::Net::setSocketMulticastTtl(socket_, multicastTtl(), &optionError);
+
+        const sockaddr_in bindAddr = LDdsFramework::Net::toSockAddr(address, port);
+        if (::bind(socket_, reinterpret_cast<const sockaddr*>(&bindAddr), sizeof(bindAddr)) != 0)
+        {
+            setErrorString(LString::fromStdString(LDdsFramework::Net::errorCodeToString(
+                LDdsFramework::Net::getLastErrorCode())));
+            close();
+            return false;
+        }
+
+        (void)LDdsFramework::Net::setNonBlocking(socket_, true, &optionError);
+
+        if (!LDdsFramework::Net::tryGetBoundPort(socket_, localPort_))
+        {
+            localPort_ = port;
+        }
+
+        setState(BoundState);
+        return true;
+    }
+
+    qint64 writeDatagram(const char* data, qint64 size, const LHostAddress& address, quint16 port)
+    {
+        if (!LDdsFramework::Net::isSocketValid(socket_) || data == nullptr || size <= 0)
+        {
+            return -1;
+        }
+
+        const sockaddr_in target = LDdsFramework::Net::toSockAddr(address, port);
+        const int result = static_cast<int>(::sendto(
+            socket_,
+            data,
+            static_cast<int>(size),
+            0,
+            reinterpret_cast<const sockaddr*>(&target),
+            static_cast<int>(sizeof(target))));
+        if (result < 0)
+        {
+            setErrorString(LString::fromStdString(LDdsFramework::Net::errorCodeToString(
+                LDdsFramework::Net::getLastErrorCode())));
+            return -1;
+        }
+
+        return static_cast<qint64>(result);
+    }
+
+    bool waitForReadyRead(int timeoutMs)
+    {
+        if (!pending_.empty())
+        {
+            return true;
+        }
+
+        if (!LDdsFramework::Net::isSocketValid(socket_))
+        {
+            return false;
+        }
+
+        const int ready = LDdsFramework::Net::selectRead(socket_, timeoutMs);
+        if (ready <= 0)
+        {
+            return false;
+        }
+
+        pullPendingDatagrams();
+        return !pending_.empty();
+    }
+
+    bool hasPendingDatagrams() const
+    {
+        return !pending_.empty();
+    }
+
+    qint64 pendingDatagramSize() const
+    {
+        if (pending_.empty())
+        {
+            return -1;
+        }
+        return static_cast<qint64>(pending_.front().data.size());
+    }
+
+    qint64 readDatagram(char* data, qint64 maxSize, LHostAddress* sender, quint16* senderPort)
+    {
+        if (pending_.empty() || data == nullptr || maxSize <= 0)
+        {
+            return -1;
+        }
+
+        Datagram packet = std::move(pending_.front());
+        pending_.pop_front();
+
+        const qint64 copySize = std::min<qint64>(maxSize, static_cast<qint64>(packet.data.size()));
+        if (copySize > 0)
+        {
+            std::memcpy(data, packet.data.data(), static_cast<size_t>(copySize));
+        }
+
+        if (sender != nullptr)
+        {
+            *sender = packet.sender;
+        }
+        if (senderPort != nullptr)
+        {
+            *senderPort = packet.senderPort;
+        }
+
+        return copySize;
+    }
+
+    bool joinMulticastGroup(const LHostAddress& group)
+    {
+        if (!LDdsFramework::Net::isSocketValid(socket_))
+        {
+            return false;
+        }
+
+        ip_mreq membership;
+        std::memset(&membership, 0, sizeof(membership));
+        membership.imr_multiaddr.s_addr = htonl(group.toIPv4Address());
+        membership.imr_interface.s_addr = htonl(0U);
+        if (setsockopt(
+                socket_,
+                IPPROTO_IP,
+                IP_ADD_MEMBERSHIP,
+                reinterpret_cast<const char*>(&membership),
+                sizeof(membership)) != 0)
+        {
+            setErrorString(LString::fromStdString(LDdsFramework::Net::errorCodeToString(
+                LDdsFramework::Net::getLastErrorCode())));
+            return false;
+        }
+        return true;
+    }
+
+    quint16 localPort() const
+    {
+        return localPort_;
+    }
+
+    void close()
+    {
+        pending_.clear();
+        localPort_ = 0;
+        LDdsFramework::Net::closeSocketQuietly(socket_);
+        setState(UnconnectedState);
+    }
+
+private:
+    struct Datagram
+    {
+        std::vector<char> data;
+        LHostAddress sender;
+        quint16 senderPort;
+    };
+
+    void pullPendingDatagrams()
+    {
+        if (!LDdsFramework::Net::isSocketValid(socket_))
+        {
+            return;
+        }
+
+        while (true)
+        {
+            std::vector<char> packet(65536);
+            sockaddr_in senderAddr;
+            std::memset(&senderAddr, 0, sizeof(senderAddr));
+#ifdef _WIN32
+            int senderLen = static_cast<int>(sizeof(senderAddr));
+#else
+            socklen_t senderLen = static_cast<socklen_t>(sizeof(senderAddr));
+#endif
+
+            const int recvBytes = static_cast<int>(::recvfrom(
+                socket_,
+                packet.data(),
+                static_cast<int>(packet.size()),
+                0,
+                reinterpret_cast<sockaddr*>(&senderAddr),
+                &senderLen));
+            if (recvBytes > 0)
+            {
+                packet.resize(static_cast<size_t>(recvBytes));
+                pending_.push_back(Datagram{
+                    std::move(packet),
+                    LDdsFramework::Net::fromSockAddr(senderAddr),
+                    LDdsFramework::Net::portFromSockAddr(senderAddr)
+                });
+                continue;
+            }
+
+            if (recvBytes == 0)
+            {
+                break;
+            }
+
+            const int errorCode = LDdsFramework::Net::getLastErrorCode();
+            if (LDdsFramework::Net::isWouldBlockError(errorCode))
+            {
+                break;
+            }
+
+            setErrorString(LString::fromStdString(LDdsFramework::Net::errorCodeToString(errorCode)));
+            break;
+        }
+    }
+
+private:
+    LDdsFramework::Net::SocketHandle socket_;
+    quint16 localPort_;
+    std::deque<Datagram> pending_;
+};
+
+#endif // LQT_COMPAT_QUDPSOCKET_H

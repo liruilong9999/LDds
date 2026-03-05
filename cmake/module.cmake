@@ -3,9 +3,7 @@
 # ARGV1: Type（Exe / ExeCMD / Lib / Dll）
 # ARGV2: 可选输出子目录
 macro(CreateTarget ProjectName Type)
-    if(NOT("${QT_LIBRARY_LIST}" STREQUAL ""))
-        include("${ROOT_DIR}/cmake/module_qt.cmake")
-    endif()
+    find_package(Threads REQUIRED)
 
     message(STATUS "${ProjectName}")
     project(${ProjectName} LANGUAGES CXX)
@@ -87,11 +85,6 @@ macro(CreateTarget ProjectName Type)
             VS_DEBUGGER_WORKING_DIRECTORY "$(OutDir)")
     endif()
 
-    if(NOT("${QT_LIBRARY_LIST}" STREQUAL ""))
-        AddQtInc("${QT_LIBRARY_LIST}")
-        AddQtLib("${QT_LIBRARY_LIST}")
-    endif()
-
     foreach(_lib ${SELF_LIBRARY_LIST})
         if(TARGET ${_lib})
             target_link_libraries(${PROJECT_NAME} PRIVATE ${_lib})
@@ -99,6 +92,8 @@ macro(CreateTarget ProjectName Type)
             target_link_libraries(${PROJECT_NAME} PRIVATE ${_lib}$<$<CONFIG:Debug>:d>)
         endif()
     endforeach()
+
+    target_link_libraries(${PROJECT_NAME} PRIVATE Threads::Threads)
 
     if(WIN32)
         source_group("CMake Rules"  REGULAR_EXPRESSION "^$")

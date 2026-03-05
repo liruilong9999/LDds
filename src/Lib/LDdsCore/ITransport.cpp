@@ -6,7 +6,7 @@
 namespace LDdsFramework {
 
 TransportConfig::TransportConfig()
-    : bindAddress(QStringLiteral("0.0.0.0"))
+    : bindAddress(LStringLiteral("0.0.0.0"))
     , bindPort(0)
     , remoteAddress()
     , remotePort(0)
@@ -45,16 +45,16 @@ ITransport::~ITransport() = default;
 
 bool ITransport::broadcastMessage(const LMessage& message, quint16 broadcastPort)
 {
-    Q_UNUSED(message)
-    Q_UNUSED(broadcastPort)
-    setError(QStringLiteral("Broadcast is not supported by this transport"));
+    L_UNUSED(message)
+    L_UNUSED(broadcastPort)
+    setError(LStringLiteral("Broadcast is not supported by this transport"));
     return false;
 }
 
-bool ITransport::setDefaultRemote(const QHostAddress& targetAddress, quint16 targetPort)
+bool ITransport::setDefaultRemote(const LHostAddress& targetAddress, quint16 targetPort)
 {
     if (targetAddress.isNull() || targetPort == 0) {
-        setError(QStringLiteral("Invalid default remote endpoint"));
+        setError(LStringLiteral("Invalid default remote endpoint"));
         return false;
     }
 
@@ -87,7 +87,7 @@ void ITransport::setConfig(const TransportConfig& config)
     m_config = config;
 }
 
-QString ITransport::getLastError() const noexcept
+LString ITransport::getLastError() const noexcept
 {
     std::lock_guard<std::mutex> lock(m_errorMutex);
     return m_lastError;
@@ -115,14 +115,14 @@ void ITransport::setState(TransportState state) noexcept
     m_state.store(state);
 }
 
-void ITransport::setError(const QString& error)
+void ITransport::setError(const LString& error)
 {
     std::lock_guard<std::mutex> lock(m_errorMutex);
     m_lastError = error;
 }
 
 void ITransport::notifyReceiveCallback(const LMessage& message,
-                                       const QHostAddress& senderAddress,
+                                       const LHostAddress& senderAddress,
                                        quint16 senderPort)
 {
     std::lock_guard<std::mutex> lock(m_callbackMutex);

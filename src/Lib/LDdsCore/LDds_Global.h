@@ -11,6 +11,7 @@
  * 3. 当前实现面向 Windows（MSVC）；如需跨平台，可在此文件统一扩展。
  */
 
+#if defined(_WIN32)
 #ifdef LDDSCORE_LIBRARY
 /**
  * @brief 导出符号（用于构建 LDdsCore.dll）。
@@ -21,6 +22,13 @@
  * @brief 导入符号（用于使用 LDdsCore.dll）。
  */
 #define LDDSCORE_EXPORT __declspec(dllimport)
+#endif
+#else
+#ifdef LDDSCORE_LIBRARY
+#define LDDSCORE_EXPORT __attribute__((visibility("default")))
+#else
+#define LDDSCORE_EXPORT
+#endif
 #endif
 
 #ifdef _MSC_VER
