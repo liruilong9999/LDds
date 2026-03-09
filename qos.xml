@@ -1,7 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<qos>
-    <transport type="udp" />
-    <historyDepth>5</historyDepth>
-    <deadlineMs>1000</deadlineMs>
-    <reliable>false</reliable>
-</qos>
