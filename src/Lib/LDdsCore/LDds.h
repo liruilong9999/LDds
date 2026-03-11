@@ -36,6 +36,7 @@
 #include "LMessage.h"
 #include "LQos.h"
 #include "LTypeRegistry.h"
+#include "LDdsTypes.h"
 #include "LDds_Global.h"
 
 namespace LDdsFramework {
@@ -79,6 +80,7 @@ public:
 
     bool initialize();
     bool initialize(const TransportConfig & transportConfig);
+    bool initialize(const DdsInitOptions & options);
 
     /**
      * @brief 按 QoS 初始化运行时。
@@ -159,6 +161,10 @@ public:
 
     bool publishTopic(uint32_t topic, const std::vector<uint8_t> & payload);
     bool publish(const std::string & topicKey, const std::shared_ptr<void> & object);
+    bool publish(
+        const std::string & topicKey,
+        const std::shared_ptr<void> & object,
+        const DdsPublishOptions & publishOptions);
     /**
      * @brief 通过类型名发布对象（使用类型注册中心序列化）。
      */
@@ -193,6 +199,41 @@ public:
             return false;
         }
         return publish(topicKey, *object);
+    }
+
+    template<typename T, typename std::enable_if<!std::is_pointer<T>::value, int>::type = 0>
+    bool publish(const std::string & topicKey, const T & object, const DdsPublishOptions & publishOptions)
+    {
+        const uint32_t topic = m_pTypeRegistry->getTopicByTopicKey(topicKey);
+        if (topic == 0)
+        {
+            setLastError("topic not registered for key: " + topicKey);
+            return false;
+        }
+
+        std::vector<uint8_t> payload;
+        if (!m_pTypeRegistry->serializeByTopic(topic, &object, payload))
+        {
+            setLastError("serialize failed for topic=" + std::to_string(topic));
+            return false;
+        }
+
+        return publishSerializedTopic(
+            topic,
+            std::move(payload),
+            m_pTypeRegistry->getTypeNameByTopic(topic),
+            &publishOptions);
+    }
+
+    template<typename T>
+    bool publish(const std::string & topicKey, const T * object, const DdsPublishOptions & publishOptions)
+    {
+        if (object == nullptr)
+        {
+            setLastError("publish object is null");
+            return false;
+        }
+        return publish(topicKey, *object, publishOptions);
     }
 
     template<typename T, typename std::enable_if<!std::is_pointer<T>::value, int>::type = 0>
@@ -231,6 +272,82 @@ public:
 
     void subscribeTopic(uint32_t topic, TopicCallback callback);
     LFindSet * sub(const std::string & topicKey);
+    bool serializeTopic(
+        const std::string & topicKey,
+        const void * object,
+        std::vector<uint8_t> & payload) const;
+    bool deserializeTopic(
+        const std::string & topicKey,
+        const std::vector<uint8_t> & payload,
+        void * object) const;
+    bool getTopicInfo(const std::string & topicKey, DdsTopicInfo & topicInfo) const;
+    std::vector<DdsTopicInfo> listTopicInfos() const;
+    bool readNextSerialized(
+        const std::string & topicKey,
+        DdsCursor & cursor,
+        std::vector<uint8_t> & payload,
+        DdsSampleMetadata * metadata = nullptr) const;
+    bool getTopicQos(const std::string & topicKey, TopicQosOverride & topicQos) const;
+
+    template<typename T>
+    bool serializeTopic(
+        const std::string & topicKey,
+        const T & object,
+        std::vector<uint8_t> & payload) const
+    {
+        return serializeTopic(topicKey, static_cast<const void *>(&object), payload);
+    }
+
+    template<typename T>
+    bool deserializeTopic(
+        const std::string & topicKey,
+        const std::vector<uint8_t> & payload,
+        T & object) const
+    {
+        return deserializeTopic(topicKey, payload, static_cast<void *>(&object));
+    }
+
+    template<typename T>
+    bool readNext(
+        const std::string & topicKey,
+        DdsCursor & cursor,
+        T & object,
+        DdsSampleMetadata * metadata = nullptr) const
+    {
+        std::vector<uint8_t> payload;
+        if (!readNextSerialized(topicKey, cursor, payload, metadata))
+        {
+            return false;
+        }
+        return deserializeTopic(topicKey, payload, object);
+    }
+
+    template<typename T>
+    std::size_t readBatch(
+        const std::string & topicKey,
+        DdsCursor & cursor,
+        std::vector<T> & objects,
+        std::vector<DdsSampleMetadata> * metadataList = nullptr) const
+    {
+        std::size_t count = 0;
+        for (;;)
+        {
+            T object{};
+            DdsSampleMetadata metadata;
+            if (!readNext(topicKey, cursor, object, &metadata))
+            {
+                break;
+            }
+
+            objects.push_back(std::move(object));
+            if (metadataList != nullptr)
+            {
+                metadataList->push_back(std::move(metadata));
+            }
+            ++count;
+        }
+        return count;
+    }
 
     template<typename T>
     void subscribeTopic(uint32_t topic, std::function<void(const T &)> callback)
@@ -329,6 +446,13 @@ private:
         std::string psk;
     };
 
+    struct RuntimeIdentity
+    {
+        std::string profileName;
+        std::string sourceApp;
+        std::string runId;
+    };
+
     struct RuntimeModuleHandle
     {
         std::string moduleName;
@@ -367,8 +491,10 @@ private:
     };
 
     bool createTransportFromQos(const LQos & qos, const TransportConfig & transportConfig);
+    void applyInitOptions(const DdsInitOptions & options);
     bool applyGeneratedModules();
     void rememberRegisteredTopics();
+    int32_t resolveTopicDeadlineMs(uint32_t topic) const;
     bool loadConfiguredRuntimeModules();
     bool loadConfiguredRuntimeModules(const std::string & configPath);
     bool loadRuntimeModule(const std::string & moduleName, const std::string & modulePath, bool required);
@@ -433,7 +559,8 @@ private:
     bool publishSerializedTopic(
         uint32_t                topic,
         std::vector<uint8_t> && payload,
-        const std::string &     dataType
+        const std::string &     dataType,
+        const DdsPublishOptions * publishOptions = nullptr
     );
     void handleTransportMessage(const LMessage & message, const LHostAddress & senderAddress, quint16 senderPort);
     void markTopicActivity(uint32_t topic);
@@ -495,6 +622,7 @@ private:
 
     std::unordered_set<uint32_t> m_knownTopics;
     mutable std::mutex m_knownTopicsMutex;
+    std::unordered_map<uint32_t, TopicQosOverride> m_topicQosOverrides;
 
     std::unordered_map<uint32_t, OwnershipTopicState> m_topicOwnership;
     mutable std::mutex m_ownershipMutex;
@@ -522,7 +650,88 @@ private:
 
     mutable std::mutex m_runtimeModuleMutex;
     std::vector<RuntimeModuleHandle> m_runtimeModules;
+    mutable std::mutex m_identityMutex;
+    RuntimeIdentity m_runtimeIdentity;
+    std::string m_relyConfigPathOverride;
 };
+
+class LDDSCORE_EXPORT LDdsContext final
+{
+public:
+    LDdsContext();
+    explicit LDdsContext(const DdsInitOptions & options);
+
+    bool initialize();
+    bool initialize(const DdsInitOptions & options);
+    void shutdown() noexcept;
+    bool isRunning() const noexcept;
+
+    LDds & dds() noexcept;
+    const LDds & dds() const noexcept;
+    const DdsInitOptions & options() const noexcept;
+
+    template<typename T, typename std::enable_if<!std::is_pointer<T>::value, int>::type = 0>
+    bool publish(const std::string & topicKey, const T & object)
+    {
+        return m_dds.publish(topicKey, object);
+    }
+
+    template<typename T>
+    bool publish(const std::string & topicKey, const T * object)
+    {
+        return m_dds.publish(topicKey, object);
+    }
+
+    template<typename T, typename std::enable_if<!std::is_pointer<T>::value, int>::type = 0>
+    bool publish(const std::string & topicKey, const T & object, const DdsPublishOptions & publishOptions)
+    {
+        return m_dds.publish(topicKey, object, publishOptions);
+    }
+
+    template<typename T>
+    bool publish(const std::string & topicKey, const T * object, const DdsPublishOptions & publishOptions)
+    {
+        return m_dds.publish(topicKey, object, publishOptions);
+    }
+
+    template<typename T>
+    bool serializeTopic(const std::string & topicKey, const T & object, std::vector<uint8_t> & payload) const
+    {
+        return m_dds.serializeTopic(topicKey, static_cast<const void *>(&object), payload);
+    }
+
+    template<typename T>
+    bool deserializeTopic(const std::string & topicKey, const std::vector<uint8_t> & payload, T & object) const
+    {
+        return m_dds.deserializeTopic(topicKey, payload, static_cast<void *>(&object));
+    }
+
+    template<typename T>
+    bool readNext(const std::string & topicKey, DdsCursor & cursor, T & object, DdsSampleMetadata * metadata = nullptr) const
+    {
+        return m_dds.readNext(topicKey, cursor, object, metadata);
+    }
+
+    template<typename T>
+    std::size_t readBatch(
+        const std::string & topicKey,
+        DdsCursor & cursor,
+        std::vector<T> & objects,
+        std::vector<DdsSampleMetadata> * metadataList = nullptr) const
+    {
+        return m_dds.readBatch(topicKey, cursor, objects, metadataList);
+    }
+
+    LFindSet * sub(const std::string & topicKey);
+    bool getTopicInfo(const std::string & topicKey, DdsTopicInfo & topicInfo) const;
+    std::vector<DdsTopicInfo> listTopicInfos() const;
+
+private:
+    DdsInitOptions m_options;
+    LDds m_dds;
+};
+
+LDDSCORE_EXPORT std::shared_ptr<LDdsContext> createContext(const DdsInitOptions & options);
 
 const char * getVersion() noexcept;
 /**
@@ -534,6 +743,7 @@ const char * getBuildTime() noexcept;
  * @brief 模块级初始化（兼容旧接口）。
  */
 LDDSCORE_EXPORT bool initialize() noexcept;
+LDDSCORE_EXPORT bool initialize(const DdsInitOptions & options) noexcept;
 LDDSCORE_EXPORT bool initialize(const TransportConfig & transportConfig) noexcept;
 LDDSCORE_EXPORT bool initialize(const LQos & qos) noexcept;
 LDDSCORE_EXPORT bool initialize(

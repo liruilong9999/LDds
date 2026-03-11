@@ -8,6 +8,7 @@ namespace LDdsFramework {
 
 LFindSet::LFindSet() noexcept
     : m_snapshot()
+    , m_metadata()
     , m_cursor(0)
     , m_objects()
     , m_pTypeRegistry(nullptr)
@@ -17,6 +18,7 @@ LFindSet::LFindSet() noexcept
 
 LFindSet::LFindSet(std::vector<std::vector<uint8_t>> snapshot)
     : m_snapshot(std::move(snapshot))
+    , m_metadata(m_snapshot.size())
     , m_cursor(0)
     , m_objects(m_snapshot.size())
     , m_pTypeRegistry(nullptr)
@@ -24,8 +26,25 @@ LFindSet::LFindSet(std::vector<std::vector<uint8_t>> snapshot)
 {
 }
 
+LFindSet::LFindSet(
+    std::vector<std::vector<uint8_t>> snapshot,
+    std::vector<DdsSampleMetadata> metadata)
+    : m_snapshot(std::move(snapshot))
+    , m_metadata(std::move(metadata))
+    , m_cursor(0)
+    , m_objects(m_snapshot.size())
+    , m_pTypeRegistry(nullptr)
+    , m_topic(0)
+{
+    if (m_metadata.size() < m_snapshot.size())
+    {
+        m_metadata.resize(m_snapshot.size());
+    }
+}
+
 LFindSet::LFindSet(const std::deque<std::vector<uint8_t>> & topicHistory)
     : m_snapshot()
+    , m_metadata()
     , m_cursor(0)
     , m_objects()
     , m_pTypeRegistry(nullptr)
@@ -37,6 +56,7 @@ LFindSet::LFindSet(const std::deque<std::vector<uint8_t>> & topicHistory)
         m_snapshot.push_back(*it);
     }
     m_objects.resize(m_snapshot.size());
+    m_metadata.resize(m_snapshot.size());
 }
 
 LFindSet::~LFindSet() noexcept = default;
@@ -62,6 +82,20 @@ bool LFindSet::getNextTopicData(std::vector<uint8_t> & data)
     data = m_snapshot[m_cursor];
     ++m_cursor;
     return true;
+}
+
+const DdsSampleMetadata * LFindSet::getFirstMetadata() const noexcept
+{
+    return getMetadata(0);
+}
+
+const DdsSampleMetadata * LFindSet::getMetadata(std::size_t index) const noexcept
+{
+    if (index >= m_metadata.size())
+    {
+        return nullptr;
+    }
+    return &m_metadata[index];
 }
 
 void LFindSet::bindTypeRegistry(const LTypeRegistry * typeRegistry, uint32_t topic) noexcept

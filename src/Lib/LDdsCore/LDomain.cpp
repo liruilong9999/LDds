@@ -18,6 +18,7 @@ LDomain::LDomain() noexcept
     , m_participantCount(0)
     , m_valid(false)
     , m_historyDepth(1)
+    , m_topicHistoryDepthOverrides()
     , m_persistentDurabilityEnabled(false)
     , m_durabilityDbPath()
     , m_localSequence(0)
@@ -52,6 +53,7 @@ LDomain::LDomain(LDomain && other) noexcept
     other.m_participantCount = 0;
     other.m_valid            = false;
     other.m_historyDepth     = 1;
+    other.m_topicHistoryDepthOverrides.clear();
     other.m_persistentDurabilityEnabled = false;
     other.m_localSequence = 0;
 }
@@ -65,6 +67,7 @@ LDomain & LDomain::operator=(LDomain && other) noexcept
         m_participantCount = other.m_participantCount;
         m_valid            = other.m_valid;
         m_historyDepth     = other.m_historyDepth;
+        m_topicHistoryDepthOverrides = std::move(other.m_topicHistoryDepthOverrides);
         m_persistentDurabilityEnabled = other.m_persistentDurabilityEnabled;
         m_durabilityDbPath = std::move(other.m_durabilityDbPath);
         m_localSequence = other.m_localSequence;
@@ -80,6 +83,7 @@ LDomain & LDomain::operator=(LDomain && other) noexcept
         other.m_participantCount = 0;
         other.m_valid            = false;
         other.m_historyDepth     = 1;
+        other.m_topicHistoryDepthOverrides.clear();
         other.m_persistentDurabilityEnabled = false;
         other.m_localSequence = 0;
     }
@@ -102,6 +106,7 @@ bool LDomain::create(DomainId domainId, const LQos * pQos)
     m_participantCount = 0;
     m_valid            = true;
     m_historyDepth     = 1;
+    m_topicHistoryDepthOverrides.clear();
     m_persistentDurabilityEnabled = false;
     m_localSequence = 0;
     m_durabilityDbPath.clear();
@@ -203,6 +208,24 @@ void LDomain::setHistoryDepth(size_t depth) noexcept
     }
 }
 
+void LDomain::setTopicHistoryDepth(uint32_t topic, size_t depth) noexcept
+{
+    if (topic == 0)
+    {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(m_topicCacheMutex);
+    if (depth == 0)
+    {
+        m_topicHistoryDepthOverrides.erase(topic);
+    }
+    else
+    {
+        m_topicHistoryDepthOverrides[topic] = depth;
+    }
+}
+
 size_t LDomain::getHistoryDepth() const noexcept
 {
     std::lock_guard<std::mutex> lock(m_topicCacheMutex);
@@ -212,7 +235,8 @@ size_t LDomain::getHistoryDepth() const noexcept
 void LDomain::cacheTopicData(
     uint32_t                    topic,
     const std::vector<uint8_t> & data,
-    const std::string &         dataType)
+    const std::string &         dataType,
+    const DdsSampleMetadata &   metadata)
 {
     if (topic == 0)
     {
@@ -223,11 +247,22 @@ void LDomain::cacheTopicData(
 
     auto & topicQueue = m_topicCache[topic];
     topicQueue.push_back(data);
+    auto & metadataQueue = m_topicMetadata[topic];
+    metadataQueue.push_back(metadata);
 
-    const size_t depth = m_historyDepth == 0 ? 1 : m_historyDepth;
+    size_t depth = m_historyDepth == 0 ? 1 : m_historyDepth;
+    const auto depthIt = m_topicHistoryDepthOverrides.find(topic);
+    if (depthIt != m_topicHistoryDepthOverrides.end() && depthIt->second > 0)
+    {
+        depth = depthIt->second;
+    }
     while (topicQueue.size() > depth)
     {
         topicQueue.pop_front();
+        if (!metadataQueue.empty())
+        {
+            metadataQueue.pop_front();
+        }
     }
 
     if (!dataType.empty())
@@ -262,10 +297,37 @@ LFindSet LDomain::getFindSetByTopic(uint32_t topic) const
     {
         return LFindSet();
     }
-    return LFindSet(it->second);
+
+    std::vector<std::vector<uint8_t>> snapshot;
+    snapshot.reserve(it->second.size());
+    for (auto payloadIt = it->second.rbegin(); payloadIt != it->second.rend(); ++payloadIt)
+    {
+        snapshot.push_back(*payloadIt);
+    }
+
+    std::vector<DdsSampleMetadata> metadata;
+    const auto metaIt = m_topicMetadata.find(topic);
+    if (metaIt != m_topicMetadata.end())
+    {
+        metadata.reserve(metaIt->second.size());
+        for (auto itemIt = metaIt->second.rbegin(); itemIt != metaIt->second.rend(); ++itemIt)
+        {
+            metadata.push_back(*itemIt);
+        }
+    }
+
+    if (metadata.size() < snapshot.size())
+    {
+        metadata.resize(snapshot.size());
+    }
+
+    return LFindSet(std::move(snapshot), std::move(metadata));
 }
 
-bool LDomain::getTopicData(uint32_t topic, std::vector<uint8_t> & data) const
+bool LDomain::getTopicData(
+    uint32_t topic,
+    std::vector<uint8_t> & data,
+    DdsSampleMetadata * metadata) const
 {
     std::lock_guard<std::mutex> lock(m_topicCacheMutex);
     const auto                  it = m_topicCache.find(topic);
@@ -275,10 +337,22 @@ bool LDomain::getTopicData(uint32_t topic, std::vector<uint8_t> & data) const
     }
 
     data = it->second.back();
+    if (metadata != nullptr)
+    {
+        const auto metaIt = m_topicMetadata.find(topic);
+        if (metaIt != m_topicMetadata.end() && !metaIt->second.empty())
+        {
+            *metadata = metaIt->second.back();
+        }
+    }
     return true;
 }
 
-bool LDomain::getNextTopicData(uint32_t topic, size_t & cursorFromNewest, std::vector<uint8_t> & data) const
+bool LDomain::getNextTopicData(
+    uint32_t topic,
+    size_t & cursorFromNewest,
+    std::vector<uint8_t> & data,
+    DdsSampleMetadata * metadata) const
 {
     std::lock_guard<std::mutex> lock(m_topicCacheMutex);
     const auto                  it = m_topicCache.find(topic);
@@ -295,6 +369,14 @@ bool LDomain::getNextTopicData(uint32_t topic, size_t & cursorFromNewest, std::v
 
     const size_t index = topicQueue.size() - 1 - cursorFromNewest;
     data               = topicQueue[index];
+    if (metadata != nullptr)
+    {
+        const auto metaIt = m_topicMetadata.find(topic);
+        if (metaIt != m_topicMetadata.end() && index < metaIt->second.size())
+        {
+            *metadata = metaIt->second[index];
+        }
+    }
     ++cursorFromNewest;
     return true;
 }
@@ -310,6 +392,7 @@ void LDomain::clearTopicCache() noexcept
 {
     std::lock_guard<std::mutex> lock(m_topicCacheMutex);
     m_topicCache.clear();
+    m_topicMetadata.clear();
     m_topicDataTypes.clear();
 }
 

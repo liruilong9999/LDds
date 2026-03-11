@@ -1039,8 +1039,9 @@ std::string generateTopicCpp(const std::string & prefix, const LIdlFile & file)
         }
 
         const auto * topic = it->second;
+        const std::string runtimeTopicKey = makeRuntimeTopicKey(prefix, topic->name);
         out << "    ok = registry.registerTopicType<" << st.fullName << ">(\n";
-        out << "        \"" << makeRuntimeTopicKey(prefix, topic->name) << "\",\n";
+        out << "        \"" << runtimeTopicKey << "\",\n";
         out << "        \"" << st.fullName << "\",\n";
         out << "        [](const " << st.fullName << " & object, std::vector<uint8_t> & outPayload) -> bool {\n";
         out << "            outPayload = object.serialize();\n";
@@ -1050,6 +1051,7 @@ std::string generateTopicCpp(const std::string & prefix, const LIdlFile & file)
         out << "            return object.deserialize(payload);\n";
         out << "        }\n";
         out << "    ) && ok;\n";
+        out << "    ok = registry.setTopicInfo(\"" << runtimeTopicKey << "\", \"" << moduleName << "\", \"1.0\") && ok;\n";
     }
 
     for (const auto & un : file.unions)
@@ -1061,8 +1063,9 @@ std::string generateTopicCpp(const std::string & prefix, const LIdlFile & file)
         }
 
         const auto * topic = it->second;
+        const std::string runtimeTopicKey = makeRuntimeTopicKey(prefix, topic->name);
         out << "    ok = registry.registerTopicType<" << un.fullName << ">(\n";
-        out << "        \"" << makeRuntimeTopicKey(prefix, topic->name) << "\",\n";
+        out << "        \"" << runtimeTopicKey << "\",\n";
         out << "        \"" << un.fullName << "\",\n";
         out << "        [](const " << un.fullName << " & object, std::vector<uint8_t> & outPayload) -> bool {\n";
         out << "            outPayload = object.serialize();\n";
@@ -1072,6 +1075,7 @@ std::string generateTopicCpp(const std::string & prefix, const LIdlFile & file)
         out << "            return object.deserialize(payload);\n";
         out << "        }\n";
         out << "    ) && ok;\n";
+        out << "    ok = registry.setTopicInfo(\"" << runtimeTopicKey << "\", \"" << moduleName << "\", \"1.0\") && ok;\n";
     }
 
     out << "    return ok;\n";

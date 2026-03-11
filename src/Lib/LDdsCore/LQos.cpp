@@ -246,6 +246,7 @@ LQos::LQos() noexcept
     , m_resourceLimits()
     , m_ownership()
     , m_userData()
+    , m_topicOverrides()
 {
     historyDepth = m_history.depth > 0 ? m_history.depth : 1;
     deadlineMs = durationToMs(m_deadline.period);
@@ -275,6 +276,7 @@ void LQos::resetToDefaults() noexcept
     m_resourceLimits = ResourceLimitsQosPolicy();
     m_ownership      = OwnershipQosPolicy();
     m_userData       = UserDataQosPolicy();
+    m_topicOverrides.clear();
     historyDepth     = 1;
     deadlineMs       = 0;
     reliable         = false;
@@ -390,6 +392,55 @@ void LQos::setUserData(const UserDataQosPolicy & policy)
 const UserDataQosPolicy & LQos::getUserData() const noexcept
 {
     return m_userData;
+}
+
+void LQos::setTopicOverrides(const std::vector<TopicQosOverride> & overrides)
+{
+    m_topicOverrides = overrides;
+}
+
+const std::vector<TopicQosOverride> & LQos::getTopicOverrides() const noexcept
+{
+    return m_topicOverrides;
+}
+
+bool LQos::resolveTopicOverride(const std::string & topicKey, TopicQosOverride & topicOverride) const
+{
+    if (topicKey.empty())
+    {
+        return false;
+    }
+
+    const TopicQosOverride * matched = nullptr;
+    for (const auto & overrideValue : m_topicOverrides)
+    {
+        if (!overrideValue.topicKey.empty() && overrideValue.topicKey == topicKey)
+        {
+            matched = &overrideValue;
+            break;
+        }
+    }
+
+    if (matched == nullptr)
+    {
+        for (const auto & overrideValue : m_topicOverrides)
+        {
+            if (!overrideValue.topicGroup.empty() &&
+                topicKey.rfind(overrideValue.topicGroup, 0) == 0)
+            {
+                matched = &overrideValue;
+                break;
+            }
+        }
+    }
+
+    if (matched == nullptr)
+    {
+        return false;
+    }
+
+    topicOverride = *matched;
+    return true;
 }
 
 bool LQos::validate(std::string & errorMessage) const
@@ -561,6 +612,7 @@ void LQos::merge(const LQos & other)
     securityEnabled = other.securityEnabled;
     securityEncryptPayload = other.securityEncryptPayload;
     securityPsk = other.securityPsk;
+    m_topicOverrides = other.m_topicOverrides;
 }
 
 bool LQos::loadFromXmlFile(const std::string & filePath, std::string * errorMessage)
@@ -643,6 +695,7 @@ bool LQos::loadFromXmlString(const std::string & xmlText, std::string * errorMes
     bool parsedSecurityEnabled = securityEnabled;
     bool parsedSecurityEncryptPayload = securityEncryptPayload;
     std::string parsedSecurityPsk = securityPsk;
+    std::vector<TopicQosOverride> parsedTopicOverrides = m_topicOverrides;
 
     if (const pugi::xml_attribute attr = root.attribute("transportType"))
     {
@@ -843,6 +896,31 @@ bool LQos::loadFromXmlString(const std::string & xmlText, std::string * errorMes
         }
     }
 
+    parsedTopicOverrides.clear();
+    for (const pugi::xml_node topicNode : root.children("topicQos"))
+    {
+        TopicQosOverride overrideValue;
+        if (const pugi::xml_attribute keyAttr = topicNode.attribute("key"))
+        {
+            overrideValue.topicKey = trim(keyAttr.as_string());
+        }
+        if (const pugi::xml_attribute groupAttr = topicNode.attribute("group"))
+        {
+            overrideValue.topicGroup = trim(groupAttr.as_string());
+        }
+        tryReadIntAttr(topicNode, "historyDepth", overrideValue.historyDepth);
+        tryReadIntAttr(topicNode, "deadlineMs", overrideValue.deadlineMs);
+        if (const pugi::xml_attribute reliableAttr = topicNode.attribute("reliable"))
+        {
+            overrideValue.reliable = parseBoolText(reliableAttr.as_string(), false);
+            overrideValue.hasReliable = true;
+        }
+        if (!overrideValue.topicKey.empty() || !overrideValue.topicGroup.empty())
+        {
+            parsedTopicOverrides.push_back(std::move(overrideValue));
+        }
+    }
+
     if (const pugi::xml_node durabilityNode = root.child("durability"))
     {
         if (const pugi::xml_attribute kindAttr = durabilityNode.attribute("kind"))
@@ -975,6 +1053,7 @@ bool LQos::loadFromXmlString(const std::string & xmlText, std::string * errorMes
     securityEnabled = parsedSecurityEnabled;
     securityEncryptPayload = parsedSecurityEncryptPayload;
     securityPsk = parsedSecurityPsk;
+    m_topicOverrides = parsedTopicOverrides;
 
     m_history.enabled = true;
     m_history.kind = HistoryKind::KeepLast;

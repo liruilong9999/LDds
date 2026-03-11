@@ -279,6 +279,26 @@ struct OwnershipQosPolicy
     }
 };
 
+struct TopicQosOverride
+{
+    std::string topicKey;
+    std::string topicGroup;
+    int32_t historyDepth;
+    int32_t deadlineMs;
+    bool reliable;
+    bool hasReliable;
+
+    TopicQosOverride() noexcept
+        : topicKey()
+        , topicGroup()
+        , historyDepth(-1)
+        , deadlineMs(-1)
+        , reliable(false)
+        , hasReliable(false)
+    {
+    }
+};
+
 class LDDSCORE_EXPORT LQos final
 {
 public:
@@ -323,6 +343,9 @@ public:
 
     void setUserData(const UserDataQosPolicy & policy);
     const UserDataQosPolicy & getUserData() const noexcept;
+    void setTopicOverrides(const std::vector<TopicQosOverride> & overrides);
+    const std::vector<TopicQosOverride> & getTopicOverrides() const noexcept;
+    bool resolveTopicOverride(const std::string & topicKey, TopicQosOverride & topicOverride) const;
 
     /**
      * @brief 校验当前 QoS 是否自洽。
@@ -425,6 +448,7 @@ private:
     ResourceLimitsQosPolicy m_resourceLimits;
     OwnershipQosPolicy m_ownership;
     UserDataQosPolicy m_userData;
+    std::vector<TopicQosOverride> m_topicOverrides;
 };
 
 } // namespace LDdsFramework

@@ -19,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include "LDdsTypes.h"
 #include "LDds_Global.h"
 
 namespace LDdsFramework {
@@ -314,6 +315,13 @@ public:
      */
     std::string getTypeNameByTopic(uint32_t topic) const;
     std::string getTopicKeyByTopic(uint32_t topic) const;
+    bool setTopicInfo(
+        const std::string & topicKey,
+        const std::string & moduleName,
+        const std::string & version = "1.0");
+    bool getTopicInfo(const std::string & topicKey, DdsTopicInfo & topicInfo) const;
+    bool getTopicInfoByTopic(uint32_t topic, DdsTopicInfo & topicInfo) const;
+    std::vector<DdsTopicInfo> listTopicInfos() const;
     std::vector<uint32_t> getRegisteredTopics() const;
     bool applyGeneratedModules(std::vector<std::string> * appliedModules = nullptr);
     static uint32_t makeTopicId(const std::string & topicKey) noexcept;
@@ -344,6 +352,8 @@ private:
          */
         std::string typeName;
         std::string topicKey;
+        std::string moduleName;
+        std::string version;
         /**
          * @brief topic id。
          */

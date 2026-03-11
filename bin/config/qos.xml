@@ -15,4 +15,7 @@
     <historyDepth>8</historyDepth>
     <deadlineMs>1000</deadlineMs>
     <reliable>false</reliable>
+
+    <topicQos key="LTopType::HANDLE_TOPIC" historyDepth="16" deadlineMs="400" />
+    <topicQos group="LCoreRuntime::" historyDepth="4" deadlineMs="800" />
 </qos>

@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#include "LDdsTypes.h"
 #include "LDds_Global.h"
 
 namespace LDdsFramework {
@@ -38,6 +39,9 @@ public:
      * @brief 用快照数据构造。
      */
     explicit LFindSet(std::vector<std::vector<uint8_t>> snapshot);
+    LFindSet(
+        std::vector<std::vector<uint8_t>> snapshot,
+        std::vector<DdsSampleMetadata> metadata);
 
     /**
      * @brief 用 topic 历史队列构造。
@@ -63,6 +67,8 @@ public:
      * @brief 获取下一条数据（新到旧），并推进游标。
      */
     bool getNextTopicData(std::vector<uint8_t>& data);
+    const DdsSampleMetadata * getFirstMetadata() const noexcept;
+    const DdsSampleMetadata * getMetadata(std::size_t index) const noexcept;
 
     void bindTypeRegistry(const LTypeRegistry * typeRegistry, uint32_t topic) noexcept;
 
@@ -106,6 +112,7 @@ private:
 
 private:
     std::vector<std::vector<uint8_t>> m_snapshot;
+    std::vector<DdsSampleMetadata> m_metadata;
     std::size_t m_cursor;
     mutable std::vector<std::shared_ptr<void>> m_objects;
     const LTypeRegistry * m_pTypeRegistry;

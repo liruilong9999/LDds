@@ -100,6 +100,8 @@ bool LTypeRegistry::registerType(
     if (topicIt != m_entriesByTopic.end() && topicIt->second != nullptr)
     {
         newEntry->topicKey = topicIt->second->topicKey;
+        newEntry->moduleName = topicIt->second->moduleName;
+        newEntry->version = topicIt->second->version;
     }
 
     m_entriesByTopic[topic] = std::move(newEntry);
@@ -215,6 +217,110 @@ std::string LTypeRegistry::getTopicKeyByTopic(uint32_t topic) const
         return std::string();
     }
     return it->second->topicKey;
+}
+
+bool LTypeRegistry::setTopicInfo(
+    const std::string & topicKey,
+    const std::string & moduleName,
+    const std::string & version)
+{
+    if (topicKey.empty())
+    {
+        return false;
+    }
+
+    std::unique_lock<std::shared_mutex> lock(m_mutex);
+    const auto keyIt = m_topicByKey.find(topicKey);
+    if (keyIt == m_topicByKey.end())
+    {
+        return false;
+    }
+
+    const auto entryIt = m_entriesByTopic.find(keyIt->second);
+    if (entryIt == m_entriesByTopic.end() || !entryIt->second)
+    {
+        return false;
+    }
+
+    entryIt->second->moduleName = moduleName;
+    entryIt->second->version = version;
+    return true;
+}
+
+bool LTypeRegistry::getTopicInfo(const std::string & topicKey, DdsTopicInfo & topicInfo) const
+{
+    if (topicKey.empty())
+    {
+        return false;
+    }
+
+    std::shared_lock<std::shared_mutex> lock(m_mutex);
+    const auto keyIt = m_topicByKey.find(topicKey);
+    if (keyIt == m_topicByKey.end())
+    {
+        return false;
+    }
+
+    const auto entryIt = m_entriesByTopic.find(keyIt->second);
+    if (entryIt == m_entriesByTopic.end() || !entryIt->second)
+    {
+        return false;
+    }
+
+    topicInfo.topicId = entryIt->second->topic;
+    topicInfo.topicKey = entryIt->second->topicKey;
+    topicInfo.typeName = entryIt->second->typeName;
+    topicInfo.moduleName = entryIt->second->moduleName;
+    topicInfo.version = entryIt->second->version;
+    return true;
+}
+
+bool LTypeRegistry::getTopicInfoByTopic(uint32_t topic, DdsTopicInfo & topicInfo) const
+{
+    std::shared_lock<std::shared_mutex> lock(m_mutex);
+    const auto entryIt = m_entriesByTopic.find(topic);
+    if (entryIt == m_entriesByTopic.end() || !entryIt->second)
+    {
+        return false;
+    }
+
+    topicInfo.topicId = entryIt->second->topic;
+    topicInfo.topicKey = entryIt->second->topicKey;
+    topicInfo.typeName = entryIt->second->typeName;
+    topicInfo.moduleName = entryIt->second->moduleName;
+    topicInfo.version = entryIt->second->version;
+    return true;
+}
+
+std::vector<DdsTopicInfo> LTypeRegistry::listTopicInfos() const
+{
+    std::vector<DdsTopicInfo> topics;
+
+    std::shared_lock<std::shared_mutex> lock(m_mutex);
+    topics.reserve(m_entriesByTopic.size());
+    for (const auto & pair : m_entriesByTopic)
+    {
+        if (!pair.second)
+        {
+            continue;
+        }
+
+        DdsTopicInfo info;
+        info.topicId = pair.second->topic;
+        info.topicKey = pair.second->topicKey;
+        info.typeName = pair.second->typeName;
+        info.moduleName = pair.second->moduleName;
+        info.version = pair.second->version;
+        topics.push_back(std::move(info));
+    }
+
+    std::sort(
+        topics.begin(),
+        topics.end(),
+        [](const DdsTopicInfo & lhs, const DdsTopicInfo & rhs) {
+            return lhs.topicId < rhs.topicId;
+        });
+    return topics;
 }
 
 bool LTypeRegistry::serializeByTopic(

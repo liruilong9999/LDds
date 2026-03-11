@@ -51,6 +51,8 @@ constexpr size_t SECURITY_ENVELOPE_PREFIX_SIZE =
     sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint64_t) + sizeof(uint64_t);
 constexpr const char * DEFAULT_QOS_RELATIVE_PATH = "config/qos.xml";
 constexpr const char * DEFAULT_RELY_RELATIVE_PATH = "config/ddsRely.xml";
+constexpr uint8_t SAMPLE_ENVELOPE_MAGIC = 0xD1U;
+constexpr uint8_t SAMPLE_ENVELOPE_VERSION = 1U;
 
 int64_t getFileWriteTick(const std::string & filePath)
 {
@@ -567,6 +569,9 @@ LDds::LDds()
     , m_findSetCache()
     , m_runtimeModuleMutex()
     , m_runtimeModules()
+    , m_identityMutex()
+    , m_runtimeIdentity()
+    , m_relyConfigPathOverride()
 {
 }
 
@@ -610,6 +615,40 @@ bool LDds::initialize(const TransportConfig & transportConfig)
     }
 
     return initialize(qos, transportConfig, INVALID_DOMAIN_ID);
+}
+
+void LDds::applyInitOptions(const DdsInitOptions & options)
+{
+    {
+        std::lock_guard<std::mutex> lock(m_identityMutex);
+        m_runtimeIdentity.profileName = options.profileName;
+        m_runtimeIdentity.sourceApp = options.sourceApp;
+        m_runtimeIdentity.runId = options.runId;
+    }
+
+    std::lock_guard<std::mutex> lock(m_runtimeModuleMutex);
+    m_relyConfigPathOverride = options.relyFile;
+}
+
+bool LDds::initialize(const DdsInitOptions & options)
+{
+    applyInitOptions(options);
+
+    const DomainId domainId =
+        (options.domainId >= 0) ? static_cast<DomainId>(options.domainId) : INVALID_DOMAIN_ID;
+
+    if (!options.qosFile.empty())
+    {
+        return initializeFromQosXml(options.qosFile, options.transportConfig, domainId);
+    }
+
+    if (domainId != INVALID_DOMAIN_ID)
+    {
+        LQos qos;
+        return initialize(qos, options.transportConfig, domainId);
+    }
+
+    return initialize(options.transportConfig);
 }
 
 bool LDds::initialize(const LQos & qos)
@@ -777,6 +816,24 @@ bool LDds::initialize(const LQos & qos, const TransportConfig & transportConfig,
 
     m_qos = effectiveQos;
     m_effectiveDomainId = effectiveDomainId;
+    m_topicQosOverrides.clear();
+    for (const auto & overrideValue : effectiveQos.getTopicOverrides())
+    {
+        const uint32_t topic =
+            !overrideValue.topicKey.empty()
+                ? LTypeRegistry::makeTopicId(overrideValue.topicKey)
+                : 0U;
+        if (topic == 0)
+        {
+            continue;
+        }
+
+        m_topicQosOverrides[topic] = overrideValue;
+        if (overrideValue.historyDepth > 0)
+        {
+            m_domain.setTopicHistoryDepth(topic, static_cast<size_t>(overrideValue.historyDepth));
+        }
+    }
     {
         std::lock_guard<std::mutex> lock(m_securityMutex);
         m_securityConfig.enabled = effectiveQos.securityEnabled;
@@ -900,6 +957,11 @@ void LDds::shutdown() noexcept
         std::lock_guard<std::mutex> lock(m_securityMutex);
         m_securityConfig = SecurityRuntimeConfig{false, false, std::string()};
     }
+    {
+        std::lock_guard<std::mutex> lock(m_identityMutex);
+        m_runtimeIdentity = RuntimeIdentity();
+    }
+    m_relyConfigPathOverride.clear();
 
     clearRuntimeModules();
     m_domain.destroy();
@@ -950,6 +1012,42 @@ bool LDds::registerType(
     return ok;
 }
 
+bool LDds::serializeTopic(
+    const std::string & topicKey,
+    const void * object,
+    std::vector<uint8_t> & payload) const
+{
+    const uint32_t topic = m_pTypeRegistry->getTopicByTopicKey(topicKey);
+    if (topic == 0)
+    {
+        return false;
+    }
+    return m_pTypeRegistry->serializeByTopic(topic, object, payload);
+}
+
+bool LDds::deserializeTopic(
+    const std::string & topicKey,
+    const std::vector<uint8_t> & payload,
+    void * object) const
+{
+    const uint32_t topic = m_pTypeRegistry->getTopicByTopicKey(topicKey);
+    if (topic == 0)
+    {
+        return false;
+    }
+    return m_pTypeRegistry->deserializeByTopic(topic, payload, object);
+}
+
+bool LDds::getTopicInfo(const std::string & topicKey, DdsTopicInfo & topicInfo) const
+{
+    return m_pTypeRegistry->getTopicInfo(topicKey, topicInfo);
+}
+
+std::vector<DdsTopicInfo> LDds::listTopicInfos() const
+{
+    return m_pTypeRegistry->listTopicInfos();
+}
+
 bool LDds::publishTopic(uint32_t topic, const std::vector<uint8_t> & payload)
 {
     const std::string typeName = m_pTypeRegistry->getTypeNameByTopic(topic);
@@ -979,6 +1077,38 @@ bool LDds::publish(const std::string & topicKey, const std::shared_ptr<void> & o
     }
 
     return publishSerializedTopic(topic, std::move(payload), m_pTypeRegistry->getTypeNameByTopic(topic));
+}
+
+bool LDds::publish(
+    const std::string & topicKey,
+    const std::shared_ptr<void> & object,
+    const DdsPublishOptions & publishOptions)
+{
+    if (!object)
+    {
+        setLastError("publish object is null");
+        return false;
+    }
+
+    const uint32_t topic = m_pTypeRegistry->getTopicByTopicKey(topicKey);
+    if (topic == 0)
+    {
+        setLastError("topic not registered for key: " + topicKey);
+        return false;
+    }
+
+    std::vector<uint8_t> payload;
+    if (!m_pTypeRegistry->serializeByTopic(topic, object.get(), payload))
+    {
+        setLastError("serialize failed for topic=" + std::to_string(topic));
+        return false;
+    }
+
+    return publishSerializedTopic(
+        topic,
+        std::move(payload),
+        m_pTypeRegistry->getTypeNameByTopic(topic),
+        &publishOptions);
 }
 
 bool LDds::publishTopic(const std::string & typeName, const std::shared_ptr<void> & object)
@@ -1036,6 +1166,67 @@ LFindSet * LDds::sub(const std::string & topicKey)
     auto & cache = m_findSetCache[topic];
     cache = std::move(findSet);
     return &cache;
+}
+
+bool LDds::readNextSerialized(
+    const std::string & topicKey,
+    DdsCursor & cursor,
+    std::vector<uint8_t> & payload,
+    DdsSampleMetadata * metadata) const
+{
+    const uint32_t topic = m_pTypeRegistry->getTopicByTopicKey(topicKey);
+    if (topic == 0)
+    {
+        return false;
+    }
+
+    LFindSet findSet = m_domain.getFindSetByTopic(topic);
+    findSet.reset();
+    bool found = false;
+    std::size_t selectedIndex = 0;
+    uint64_t selectedSequence = 0;
+    std::vector<uint8_t> selectedPayload;
+    DdsSampleMetadata selectedMetadata;
+
+    for (std::size_t index = 0; index < findSet.size(); ++index)
+    {
+        std::vector<uint8_t> candidatePayload;
+        if (!findSet.getNextTopicData(candidatePayload))
+        {
+            break;
+        }
+        const DdsSampleMetadata * candidateMetadata = findSet.getMetadata(index);
+        if (candidateMetadata == nullptr || candidateMetadata->sequence <= cursor.lastSequence)
+        {
+            continue;
+        }
+        if (!found || candidateMetadata->sequence < selectedSequence)
+        {
+            found = true;
+            selectedIndex = index;
+            selectedSequence = candidateMetadata->sequence;
+            selectedPayload = std::move(candidatePayload);
+            selectedMetadata = *candidateMetadata;
+        }
+    }
+    if (!found)
+    {
+        return false;
+    }
+
+    L_UNUSED(selectedIndex)
+    payload = std::move(selectedPayload);
+    cursor.lastSequence = selectedSequence;
+    if (metadata != nullptr)
+    {
+        *metadata = std::move(selectedMetadata);
+    }
+    return true;
+}
+
+bool LDds::getTopicQos(const std::string & topicKey, TopicQosOverride & topicQos) const
+{
+    return m_qos.resolveTopicOverride(topicKey, topicQos);
 }
 
 void LDds::unsubscribeTopic(uint32_t topic)
@@ -1139,6 +1330,74 @@ std::string LDds::getLastError() const
     return m_lastError;
 }
 
+LDdsContext::LDdsContext()
+    : m_options()
+    , m_dds()
+{
+}
+
+LDdsContext::LDdsContext(const DdsInitOptions & options)
+    : m_options(options)
+    , m_dds()
+{
+}
+
+bool LDdsContext::initialize()
+{
+    return m_dds.initialize(m_options);
+}
+
+bool LDdsContext::initialize(const DdsInitOptions & options)
+{
+    m_options = options;
+    return m_dds.initialize(m_options);
+}
+
+void LDdsContext::shutdown() noexcept
+{
+    m_dds.shutdown();
+}
+
+bool LDdsContext::isRunning() const noexcept
+{
+    return m_dds.isRunning();
+}
+
+LDds & LDdsContext::dds() noexcept
+{
+    return m_dds;
+}
+
+const LDds & LDdsContext::dds() const noexcept
+{
+    return m_dds;
+}
+
+const DdsInitOptions & LDdsContext::options() const noexcept
+{
+    return m_options;
+}
+
+LFindSet * LDdsContext::sub(const std::string & topicKey)
+{
+    return m_dds.sub(topicKey);
+}
+
+bool LDdsContext::getTopicInfo(const std::string & topicKey, DdsTopicInfo & topicInfo) const
+{
+    return m_dds.getTopicInfo(topicKey, topicInfo);
+}
+
+std::vector<DdsTopicInfo> LDdsContext::listTopicInfos() const
+{
+    return m_dds.listTopicInfos();
+}
+
+std::shared_ptr<LDdsContext> createContext(const DdsInitOptions & options)
+{
+    return std::make_shared<LDdsContext>(options);
+}
+
 bool LDds::applyGeneratedModules()
 {
     if (!m_pTypeRegistry)
@@ -1161,6 +1420,83 @@ bool LDds::applyGeneratedModules()
     return true;
 }
 
+void appendString(std::vector<uint8_t> & out, const std::string & value)
+{
+    appendU16(out, static_cast<uint16_t>(std::min<std::size_t>(value.size(), 65535U)));
+    out.insert(out.end(), value.begin(), value.begin() + static_cast<std::ptrdiff_t>(std::min<std::size_t>(value.size(), 65535U)));
+}
+
+bool readString(const std::vector<uint8_t> & data, size_t & offset, std::string & value)
+{
+    uint16_t size = 0;
+    if (!readU16(data, offset, size))
+    {
+        return false;
+    }
+    if (offset + size > data.size())
+    {
+        return false;
+    }
+    value.assign(reinterpret_cast<const char *>(data.data() + offset), size);
+    offset += size;
+    return true;
+}
+
+bool encodeSampleEnvelope(
+    const DdsSampleMetadata & metadata,
+    const std::vector<uint8_t> & payload,
+    std::vector<uint8_t> & out)
+{
+    out.clear();
+    out.reserve(payload.size() + metadata.sourceApp.size() + metadata.runId.size() + 64U);
+    appendU8(out, SAMPLE_ENVELOPE_MAGIC);
+    appendU8(out, SAMPLE_ENVELOPE_VERSION);
+    appendU64(out, metadata.simTimestamp);
+    appendU64(out, metadata.publishTimestamp);
+    appendU64(out, metadata.sequence);
+    appendString(out, metadata.sourceApp);
+    appendString(out, metadata.runId);
+    appendU32(out, static_cast<uint32_t>(payload.size()));
+    out.insert(out.end(), payload.begin(), payload.end());
+    return true;
+}
+
+bool decodeSampleEnvelope(
+    const std::vector<uint8_t> & encoded,
+    DdsSampleMetadata & metadata,
+    std::vector<uint8_t> & payload)
+{
+    payload.clear();
+    metadata = DdsSampleMetadata();
+
+    size_t offset = 0;
+    uint8_t magic = 0;
+    uint8_t version = 0;
+    uint32_t payloadSize = 0;
+    if (!readU8(encoded, offset, magic) ||
+        !readU8(encoded, offset, version) ||
+        magic != SAMPLE_ENVELOPE_MAGIC ||
+        version != SAMPLE_ENVELOPE_VERSION ||
+        !readU64(encoded, offset, metadata.simTimestamp) ||
+        !readU64(encoded, offset, metadata.publishTimestamp) ||
+        !readU64(encoded, offset, metadata.sequence) ||
+        !readString(encoded, offset, metadata.sourceApp) ||
+        !readString(encoded, offset, metadata.runId) ||
+        !readU32(encoded, offset, payloadSize))
+    {
+        return false;
+    }
+    if (offset + payloadSize > encoded.size())
+    {
+        return false;
+    }
+
+    payload.assign(
+        encoded.begin() + static_cast<std::ptrdiff_t>(offset),
+        encoded.begin() + static_cast<std::ptrdiff_t>(offset + payloadSize));
+    return true;
+}
+
 void LDds::rememberRegisteredTopics()
 {
     if (!m_pTypeRegistry)
@@ -1177,7 +1513,10 @@ void LDds::rememberRegisteredTopics()
 
 bool LDds::loadConfiguredRuntimeModules()
 {
-    const std::string configPath = resolveRuntimePath(DEFAULT_RELY_RELATIVE_PATH);
+    const std::string configPath =
+        m_relyConfigPathOverride.empty()
+            ? resolveRuntimePath(DEFAULT_RELY_RELATIVE_PATH)
+            : resolvePathAgainstBase(currentExecutableDirectory(), m_relyConfigPathOverride);
     std::error_code ec;
     if (configPath.empty() || !std::filesystem::exists(configPath, ec) || ec)
     {
@@ -1850,19 +2189,31 @@ void LDds::deliverDataMessage(const LMessage & message)
         return;
     }
 
+    DdsSampleMetadata sampleMetadata;
+    std::vector<uint8_t> payload;
+    if (!decodeSampleEnvelope(message.getPayload(), sampleMetadata, payload))
+    {
+        payload = message.getPayload();
+        sampleMetadata.sequence = message.getSequence();
+    }
+    if (sampleMetadata.sequence == 0)
+    {
+        sampleMetadata.sequence = message.getSequence();
+    }
+
     auto object = m_pTypeRegistry->createByTopic(topic);
     if (!object)
     {
         return;
     }
 
-    if (!m_pTypeRegistry->deserializeByTopic(topic, message.getPayload(), object.get()))
+    if (!m_pTypeRegistry->deserializeByTopic(topic, payload, object.get()))
     {
         return;
     }
 
     const std::string dataType = m_pTypeRegistry->getTypeNameByTopic(topic);
-    m_domain.cacheTopicData(topic, message.getPayload(), dataType);
+    m_domain.cacheTopicData(topic, payload, dataType, sampleMetadata);
     markTopicActivity(topic);
     const LHostAddress senderAddress = message.getSenderAddress();
     emitStructuredLog(
@@ -2288,6 +2639,16 @@ std::vector<std::pair<LHostAddress, quint16>> LDds::snapshotDiscoveryTargets(uin
     return targets;
 }
 
+int32_t LDds::resolveTopicDeadlineMs(uint32_t topic) const
+{
+    const auto it = m_topicQosOverrides.find(topic);
+    if (it != m_topicQosOverrides.end() && it->second.deadlineMs > 0)
+    {
+        return it->second.deadlineMs;
+    }
+    return resolveDeadlineMs(m_qos);
+}
+
 void LDds::rememberKnownTopic(uint32_t topic)
 {
     if (topic == 0)
@@ -2503,7 +2864,8 @@ uint32_t LDds::resolveReliableWriterId(
 bool LDds::publishSerializedTopic(
     uint32_t                topic,
     std::vector<uint8_t> && payload,
-    const std::string &     dataType
+    const std::string &     dataType,
+    const DdsPublishOptions * publishOptions
 )
 {
     if (topic == 0)
@@ -2520,7 +2882,33 @@ bool LDds::publishSerializedTopic(
     rememberKnownTopic(topic);
 
     const uint64_t sequence = m_sequence.fetch_add(1) + 1;
-    LMessage       message(topic, sequence, payload);
+    DdsSampleMetadata sampleMetadata;
+    sampleMetadata.sequence = sequence;
+    sampleMetadata.publishTimestamp = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+    {
+        std::lock_guard<std::mutex> lock(m_identityMutex);
+        sampleMetadata.sourceApp = m_runtimeIdentity.sourceApp;
+        sampleMetadata.runId = m_runtimeIdentity.runId;
+    }
+    if (publishOptions != nullptr)
+    {
+        sampleMetadata.simTimestamp = publishOptions->simTimestamp;
+        if (!publishOptions->sourceApp.empty())
+        {
+            sampleMetadata.sourceApp = publishOptions->sourceApp;
+        }
+        if (!publishOptions->runId.empty())
+        {
+            sampleMetadata.runId = publishOptions->runId;
+        }
+    }
+
+    std::vector<uint8_t> encodedPayload;
+    (void)encodeSampleEnvelope(sampleMetadata, payload, encodedPayload);
+
+    LMessage       message(topic, sequence, encodedPayload);
     message.setDomainId(static_cast<uint8_t>(m_effectiveDomainId));
     message.setMessageType(LMessageType::Data);
 
@@ -2631,7 +3019,7 @@ bool LDds::publishSerializedTopic(
         }
     }
 
-    m_domain.cacheTopicData(topic, payload, dataType);
+    m_domain.cacheTopicData(topic, payload, dataType, sampleMetadata);
     markTopicActivity(topic);
 
     return true;
@@ -2775,12 +3163,16 @@ void LDds::qosThreadFunc()
                     m_lastHeartbeatSend = now;
                 }
 
-                const int32_t deadlineMs = resolveDeadlineMs(m_qos);
-                if (deadlineMs > 0)
+                if (!m_lastTopicActivity.empty())
                 {
                     for (const auto & pair : m_lastTopicActivity)
                     {
                         const uint32_t topic = pair.first;
+                        const int32_t deadlineMs = resolveTopicDeadlineMs(topic);
+                        if (deadlineMs <= 0)
+                        {
+                            continue;
+                        }
                         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - pair.second).count();
                         if (elapsed > deadlineMs)
                         {
@@ -3153,6 +3545,18 @@ bool initialize() noexcept
     try
     {
         return LDds::instance().initialize();
+    }
+    catch (...)
+    {
+        return false;
+    }
+}
+
+bool initialize(const DdsInitOptions & options) noexcept
+{
+    try
+    {
+        return LDds::instance().initialize(options);
     }
     catch (...)
     {
