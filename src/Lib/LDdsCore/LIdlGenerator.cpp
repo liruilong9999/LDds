@@ -1176,7 +1176,23 @@ std::string joinVcxprojList(const std::vector<std::string> & values, const std::
     return out.str();
 }
 
-std::string generateModuleCMakeLists(const std::string & prefix, const LIdlFile & file)
+std::string toCMakePath(const fs::path & path)
+{
+    return path.generic_string();
+}
+
+std::string toVcxprojPath(const fs::path & path)
+{
+    fs::path preferred = path;
+    preferred.make_preferred();
+    return preferred.string();
+}
+
+std::string generateModuleCMakeLists(
+    const std::string & prefix,
+    const LIdlFile &    file,
+    const fs::path &    lddsRoot,
+    const fs::path &    installRoot)
 {
     const std::vector<std::string> dependencies = collectDependencyPrefixes(file, prefix);
     const std::string targetName = sanitizeName(prefix);
@@ -1191,7 +1207,12 @@ std::string generateModuleCMakeLists(const std::string & prefix, const LIdlFile 
     out << "if(NOT DEFINED LDDS_ROOT)\n";
     out << "    if(DEFINED ENV{LDDS_ROOT})\n";
     out << "        set(LDDS_ROOT \"$ENV{LDDS_ROOT}\")\n";
+    out << "    else()\n";
+    out << "        set(LDDS_ROOT \"" << toCMakePath(lddsRoot) << "\")\n";
     out << "    endif()\n";
+    out << "endif()\n";
+    out << "if(NOT DEFINED LDDS_INSTALL_ROOT)\n";
+    out << "    set(LDDS_INSTALL_ROOT \"" << toCMakePath(installRoot) << "\")\n";
     out << "endif()\n";
     out << "if(NOT LDDS_ROOT)\n";
     out << "    message(FATAL_ERROR \"Set LDDS_ROOT to the LDds root directory before building this module\")\n";
@@ -1202,19 +1223,15 @@ std::string generateModuleCMakeLists(const std::string & prefix, const LIdlFile 
     out << "target_compile_definitions(" << targetName << " PRIVATE " << exportMacro << ")\n";
     out << "target_include_directories(" << targetName << " PUBLIC\n";
     out << "    \"${CMAKE_CURRENT_SOURCE_DIR}\"\n";
-    out << "    \"${CMAKE_CURRENT_SOURCE_DIR}/lib/include\"\n";
     out << "    \"${LDDS_ROOT}/src/Lib/LDdsCore\"\n";
     for (const auto & dependency : dependencies)
     {
-        out << "    \"${CMAKE_CURRENT_SOURCE_DIR}/../" << dependency << "/lib/include\"\n";
+        out << "    \"${LDDS_INSTALL_ROOT}/include/" << dependency << "\"\n";
     }
     out << ")\n";
     out << "target_link_directories(" << targetName << " PRIVATE\n";
     out << "    \"${LDDS_ROOT}/bin/lib\"\n";
-    for (const auto & dependency : dependencies)
-    {
-        out << "    \"${CMAKE_CURRENT_SOURCE_DIR}/../" << dependency << "/lib/lib\"\n";
-    }
+    out << "    \"${LDDS_INSTALL_ROOT}/lib\"\n";
     out << ")\n";
     out << "target_link_libraries(" << targetName << " PRIVATE LDdsCore$<$<CONFIG:Debug>:d>";
     for (const auto & dependency : dependencies)
@@ -1223,22 +1240,26 @@ std::string generateModuleCMakeLists(const std::string & prefix, const LIdlFile 
     }
     out << ")\n\n";
     out << "set_target_properties(" << targetName << " PROPERTIES\n";
-    out << "    ARCHIVE_OUTPUT_DIRECTORY \"${CMAKE_CURRENT_SOURCE_DIR}/lib/lib\"\n";
-    out << "    LIBRARY_OUTPUT_DIRECTORY \"${CMAKE_CURRENT_SOURCE_DIR}/lib/dll\"\n";
-    out << "    RUNTIME_OUTPUT_DIRECTORY \"${CMAKE_CURRENT_SOURCE_DIR}/lib/dll\"\n";
+    out << "    ARCHIVE_OUTPUT_DIRECTORY \"${LDDS_INSTALL_ROOT}/lib\"\n";
+    out << "    LIBRARY_OUTPUT_DIRECTORY \"${LDDS_INSTALL_ROOT}\"\n";
+    out << "    RUNTIME_OUTPUT_DIRECTORY \"${LDDS_INSTALL_ROOT}\"\n";
     out << ")\n";
     out << "foreach(cfg Debug Release RelWithDebInfo MinSizeRel)\n";
     out << "    string(TOUPPER ${cfg} CFG)\n";
     out << "    set_target_properties(" << targetName << " PROPERTIES\n";
-    out << "        ARCHIVE_OUTPUT_DIRECTORY_${CFG} \"${CMAKE_CURRENT_SOURCE_DIR}/lib/lib\"\n";
-    out << "        LIBRARY_OUTPUT_DIRECTORY_${CFG} \"${CMAKE_CURRENT_SOURCE_DIR}/lib/dll\"\n";
-    out << "        RUNTIME_OUTPUT_DIRECTORY_${CFG} \"${CMAKE_CURRENT_SOURCE_DIR}/lib/dll\"\n";
+    out << "        ARCHIVE_OUTPUT_DIRECTORY_${CFG} \"${LDDS_INSTALL_ROOT}/lib\"\n";
+    out << "        LIBRARY_OUTPUT_DIRECTORY_${CFG} \"${LDDS_INSTALL_ROOT}\"\n";
+    out << "        RUNTIME_OUTPUT_DIRECTORY_${CFG} \"${LDDS_INSTALL_ROOT}\"\n";
     out << "    )\n";
     out << "endforeach()\n";
     return out.str();
 }
 
-std::string generateModuleVcxproj(const std::string & prefix, const LIdlFile & file)
+std::string generateModuleVcxproj(
+    const std::string & prefix,
+    const LIdlFile &    file,
+    const fs::path &    lddsRoot,
+    const fs::path &    installRoot)
 {
     const std::vector<std::string> dependencies = collectDependencyPrefixes(file, prefix);
     const std::string projectGuid = makeGuid(prefix);
@@ -1247,11 +1268,11 @@ std::string generateModuleVcxproj(const std::string & prefix, const LIdlFile & f
 
     std::vector<std::string> includeDirs = {
         "$(ProjectDir)",
-        "$(ProjectDir)lib\\include",
         "$(LDDS_ROOT)\\src\\Lib\\LDdsCore"
     };
     std::vector<std::string> libraryDirs = {
-        "$(LDDS_ROOT)\\bin\\lib"
+        "$(LDDS_ROOT)\\bin\\lib",
+        "$(LDDS_INSTALL_ROOT)\\lib"
     };
     std::vector<std::string> debugDependencies = {
         "LDdsCored.lib"
@@ -1262,8 +1283,7 @@ std::string generateModuleVcxproj(const std::string & prefix, const LIdlFile & f
 
     for (const auto & dependency : dependencies)
     {
-        includeDirs.push_back("$(ProjectDir)..\\" + dependency + "\\lib\\include");
-        libraryDirs.push_back("$(ProjectDir)..\\" + dependency + "\\lib\\lib");
+        includeDirs.push_back("$(LDDS_INSTALL_ROOT)\\include\\" + dependency);
         debugDependencies.push_back(dependency + "d.lib");
         releaseDependencies.push_back(dependency + ".lib");
     }
@@ -1283,6 +1303,10 @@ std::string generateModuleVcxproj(const std::string & prefix, const LIdlFile & f
     out << "    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>\n";
     out << "  </PropertyGroup>\n";
     out << "  <Import Project=\"$(VCTargetsPath)\\Microsoft.Cpp.Default.props\" />\n";
+    out << "  <PropertyGroup>\n";
+    out << "    <LDDS_ROOT>" << toVcxprojPath(lddsRoot) << "</LDDS_ROOT>\n";
+    out << "    <LDDS_INSTALL_ROOT>" << toVcxprojPath(installRoot) << "</LDDS_INSTALL_ROOT>\n";
+    out << "  </PropertyGroup>\n";
     out << "  <PropertyGroup Condition=\"'$(Configuration)|$(Platform)'=='Debug|x64'\" Label=\"Configuration\">\n";
     out << "    <ConfigurationType>DynamicLibrary</ConfigurationType>\n";
     out << "    <UseDebugLibraries>true</UseDebugLibraries>\n";
@@ -1295,12 +1319,12 @@ std::string generateModuleVcxproj(const std::string & prefix, const LIdlFile & f
     out << "  </PropertyGroup>\n";
     out << "  <Import Project=\"$(VCTargetsPath)\\Microsoft.Cpp.props\" />\n";
     out << "  <PropertyGroup Condition=\"'$(Configuration)|$(Platform)'=='Debug|x64'\">\n";
-    out << "    <OutDir>$(ProjectDir)lib\\dll\\</OutDir>\n";
+    out << "    <OutDir>$(LDDS_INSTALL_ROOT)\\</OutDir>\n";
     out << "    <IntDir>$(ProjectDir)build\\Debug\\</IntDir>\n";
     out << "    <TargetName>" << projectName << "d</TargetName>\n";
     out << "  </PropertyGroup>\n";
     out << "  <PropertyGroup Condition=\"'$(Configuration)|$(Platform)'=='Release|x64'\">\n";
-    out << "    <OutDir>$(ProjectDir)lib\\dll\\</OutDir>\n";
+    out << "    <OutDir>$(LDDS_INSTALL_ROOT)\\</OutDir>\n";
     out << "    <IntDir>$(ProjectDir)build\\Release\\</IntDir>\n";
     out << "    <TargetName>" << projectName << "</TargetName>\n";
     out << "  </PropertyGroup>\n";
@@ -1314,7 +1338,7 @@ std::string generateModuleVcxproj(const std::string & prefix, const LIdlFile & f
     out << "    <Link>\n";
     out << "      <AdditionalLibraryDirectories>" << joinVcxprojList(libraryDirs) << ";%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>\n";
     out << "      <AdditionalDependencies>" << joinVcxprojList(debugDependencies) << ";%(AdditionalDependencies)</AdditionalDependencies>\n";
-    out << "      <ImportLibrary>$(ProjectDir)lib\\lib\\$(TargetName).lib</ImportLibrary>\n";
+    out << "      <ImportLibrary>$(LDDS_INSTALL_ROOT)\\lib\\$(TargetName).lib</ImportLibrary>\n";
     out << "    </Link>\n";
     out << "  </ItemDefinitionGroup>\n";
     out << "  <ItemDefinitionGroup Condition=\"'$(Configuration)|$(Platform)'=='Release|x64'\">\n";
@@ -1327,7 +1351,7 @@ std::string generateModuleVcxproj(const std::string & prefix, const LIdlFile & f
     out << "    <Link>\n";
     out << "      <AdditionalLibraryDirectories>" << joinVcxprojList(libraryDirs) << ";%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>\n";
     out << "      <AdditionalDependencies>" << joinVcxprojList(releaseDependencies) << ";%(AdditionalDependencies)</AdditionalDependencies>\n";
-    out << "      <ImportLibrary>$(ProjectDir)lib\\lib\\$(TargetName).lib</ImportLibrary>\n";
+    out << "      <ImportLibrary>$(LDDS_INSTALL_ROOT)\\lib\\$(TargetName).lib</ImportLibrary>\n";
     out << "    </Link>\n";
     out << "  </ItemDefinitionGroup>\n";
     out << "  <ItemGroup>\n";
@@ -1764,12 +1788,23 @@ GenerationResult LIdlGenerator::generateFromAst(
 
     if (m_target == TargetLanguage::Cpp)
     {
+        const fs::path installRoot =
+            m_options.installRoot.empty()
+                ? outputDir.parent_path()
+                : fs::path(m_options.installRoot);
+        const fs::path lddsRoot =
+            m_options.lddsRoot.empty()
+                ? fs::current_path()
+                : fs::path(m_options.lddsRoot);
+        const fs::path installIncludeDir = installRoot / "include" / prefix;
+        const fs::path installLibDir = installRoot / "lib";
+
         const std::string exportText = generateExportHeader(prefix);
         const std::string defineText = generateDefineHeader(prefix, *idlFile);
         const std::string topicHText = generateTopicHeader(prefix, *idlFile);
         const std::string topicCppText = generateTopicCpp(prefix, *idlFile);
-        const std::string cmakeText = generateModuleCMakeLists(prefix, *idlFile);
-        const std::string vcxprojText = generateModuleVcxproj(prefix, *idlFile);
+        const std::string cmakeText = generateModuleCMakeLists(prefix, *idlFile, lddsRoot, installRoot);
+        const std::string vcxprojText = generateModuleVcxproj(prefix, *idlFile, lddsRoot, installRoot);
         const std::string slnText = generateModuleSln(prefix);
 
         const fs::path exportPath = outputDir / (prefix + "_export.h");
@@ -1779,17 +1814,11 @@ GenerationResult LIdlGenerator::generateFromAst(
         const fs::path cmakePath = outputDir / "CMakeLists.txt";
         const fs::path vcxprojPath = outputDir / (prefix + ".vcxproj");
         const fs::path slnPath = outputDir / (prefix + ".sln");
-        const fs::path packageLibDir = outputDir / "lib";
-        const fs::path includeDir = packageLibDir / "include";
-        const fs::path archiveDir = packageLibDir / "lib";
-        const fs::path dllDir = packageLibDir / "dll";
-
-        fs::create_directories(includeDir, ec);
-        fs::create_directories(archiveDir, ec);
-        fs::create_directories(dllDir, ec);
+        fs::create_directories(installIncludeDir, ec);
+        fs::create_directories(installLibDir, ec);
         if (ec)
         {
-            result.messages.push_back("failed to create generated lib directories");
+            result.messages.push_back("failed to create install directories");
             return result;
         }
 
@@ -1800,9 +1829,9 @@ GenerationResult LIdlGenerator::generateFromAst(
             !writeTextFile(cmakePath, cmakeText) ||
             !writeTextFile(vcxprojPath, vcxprojText) ||
             !writeTextFile(slnPath, slnText) ||
-            !writeTextFile(includeDir / (prefix + "_export.h"), exportText) ||
-            !writeTextFile(includeDir / (prefix + "_define.h"), defineText) ||
-            !writeTextFile(includeDir / (prefix + "_topic.h"), topicHText))
+            !writeTextFile(installIncludeDir / (prefix + "_export.h"), exportText) ||
+            !writeTextFile(installIncludeDir / (prefix + "_define.h"), defineText) ||
+            !writeTextFile(installIncludeDir / (prefix + "_topic.h"), topicHText))
         {
             result.messages.push_back("failed to write generated files");
             return result;
@@ -1876,7 +1905,7 @@ std::vector<std::string> LIdlGenerator::getFileExtensions() const
     switch (m_target)
     {
     case TargetLanguage::Cpp:
-        return {"_define.h", "_export.h", "_topic.h", "_topic.cpp", "CMakeLists.txt", ".vcxproj", ".sln", "lib/include", "lib/lib", "lib/dll"};
+        return {"_define.h", "_export.h", "_topic.h", "_topic.cpp", "CMakeLists.txt", ".vcxproj", ".sln"};
     case TargetLanguage::CSharp:
         return {".cs"};
     case TargetLanguage::Java:

@@ -676,7 +676,14 @@ bool LDds::initialize(const LQos & qos, const TransportConfig & transportConfig,
     }
 
     TransportConfig effectiveTransportConfig = transportConfig;
-    if (!effectiveTransportConfig.enableDomainPortMapping && effectiveQos.enableDomainPortMapping)
+    const bool hasExplicitBindPort = effectiveTransportConfig.bindPort != 0;
+    const bool hasExplicitRemote =
+        !effectiveTransportConfig.remoteAddress.isEmpty() &&
+        effectiveTransportConfig.remotePort != 0;
+    if (!effectiveTransportConfig.enableDomainPortMapping &&
+        effectiveQos.enableDomainPortMapping &&
+        !hasExplicitBindPort &&
+        !hasExplicitRemote)
     {
         effectiveTransportConfig.enableDomainPortMapping = true;
         effectiveTransportConfig.basePort = effectiveQos.basePort;
@@ -1008,7 +1015,7 @@ LFindSet * LDds::sub(const std::string & topicKey)
 
     rememberKnownTopic(topic);
 
-    LFindSet findSet = m_domain.getFindSetByTopic(static_cast<int>(topic));
+    LFindSet findSet = m_domain.getFindSetByTopic(topic);
     findSet.bindTypeRegistry(m_pTypeRegistry.get(), topic);
 
     std::lock_guard<std::mutex> lock(m_findSetMutex);
@@ -1841,7 +1848,7 @@ void LDds::deliverDataMessage(const LMessage & message)
     }
 
     const std::string dataType = m_pTypeRegistry->getTypeNameByTopic(topic);
-    m_domain.cacheTopicData(static_cast<int>(topic), message.getPayload(), dataType);
+    m_domain.cacheTopicData(topic, message.getPayload(), dataType);
     markTopicActivity(topic);
     const LHostAddress senderAddress = message.getSenderAddress();
     emitStructuredLog(
@@ -2608,7 +2615,7 @@ bool LDds::publishSerializedTopic(
         }
     }
 
-    m_domain.cacheTopicData(static_cast<int>(topic), payload, dataType);
+    m_domain.cacheTopicData(topic, payload, dataType);
     markTopicActivity(topic);
 
     return true;

@@ -1,11 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ddsRely>
     <!--
-      依赖顺序从底层到上层排布。
-      file2 依赖 file1，所以 file1 必须排在 file2 前面。
-      generated 的 DLL 不存在时会被跳过；生成并编译完成后去掉 optional 或改成 required 即可强校验。
+      调试版示例默认按依赖顺序加载:
+      1. file1d.dll
+      2. file2d.dll
+      file2 依赖 file1，所以必须排在 file1 后面。
+
+      如果运行 Release 版本，请把下面的 d 后缀改成无后缀版本:
+      file1.dll / file2.dll
     -->
-    <library name="file1" path="../lidl/generated/file1/lib/dll/file1d.dll" optional="true" />
-    <library name="file2" path="../lidl/generated/file2/lib/dll/file2d.dll" optional="true" />
-    <library name="pubsub_demo" path="../pubsub_demod.dll" required="true" />
+    <library name="file1" path="../file1d.dll" required="true" />
+    <library name="file2" path="../file2d.dll" required="true" />
 </ddsRely>

@@ -176,13 +176,13 @@ public:
      * @return 成功返回 true。
      */
     bool append(
-        int topic,
+        uint32_t topic,
         const std::vector<uint8_t> & data,
         const std::string & dataType,
         uint64_t sequence,
         std::string * errorMessage = nullptr)
     {
-        if (m_db == nullptr || topic <= 0 || data.empty())
+        if (m_db == nullptr || topic == 0 || data.empty())
         {
             return false;
         }
@@ -207,7 +207,7 @@ public:
 
         const sqlite3_destructor_type transient = sqliteTransient();
         (void)api().sqlite3_bind_int(stmt, 1, static_cast<int>(m_domainId));
-        (void)api().sqlite3_bind_int(stmt, 2, topic);
+        (void)api().sqlite3_bind_int64(stmt, 2, static_cast<int64_t>(topic));
         (void)api().sqlite3_bind_int64(stmt, 3, static_cast<int64_t>(sequence));
         (void)api().sqlite3_bind_blob(
             stmt,
@@ -254,8 +254,8 @@ public:
      */
     bool loadRecent(
         size_t historyDepth,
-        std::map<int, std::deque<std::vector<uint8_t>>> & topicCache,
-        std::map<int, std::string> & topicDataTypes,
+        std::map<uint32_t, std::deque<std::vector<uint8_t>>> & topicCache,
+        std::map<uint32_t, std::string> & topicDataTypes,
         std::string * errorMessage = nullptr)
     {
         if (m_db == nullptr)
@@ -299,11 +299,11 @@ public:
                 return false;
             }
 
-            const int topic = api().sqlite3_column_int(stmt, 0);
+            const uint32_t topic = static_cast<uint32_t>(api().sqlite3_column_int64(stmt, 0));
             const int blobSize = api().sqlite3_column_bytes(stmt, 1);
             const void * blob = api().sqlite3_column_blob(stmt, 1);
             const unsigned char * text = api().sqlite3_column_text(stmt, 2);
-            if (topic <= 0 || blob == nullptr || blobSize <= 0)
+            if (topic == 0 || blob == nullptr || blobSize <= 0)
             {
                 continue;
             }
@@ -356,6 +356,7 @@ private:
         int (*sqlite3_step)(sqlite3_stmt *) = nullptr;
         int (*sqlite3_finalize)(sqlite3_stmt *) = nullptr;
         int (*sqlite3_column_int)(sqlite3_stmt *, int) = nullptr;
+        int64_t (*sqlite3_column_int64)(sqlite3_stmt *, int) = nullptr;
         const unsigned char * (*sqlite3_column_text)(sqlite3_stmt *, int) = nullptr;
         const void * (*sqlite3_column_blob)(sqlite3_stmt *, int) = nullptr;
         int (*sqlite3_column_bytes)(sqlite3_stmt *, int) = nullptr;
@@ -438,6 +439,7 @@ private:
         LDDS_SQLITE_LOAD(sqlite3_step);
         LDDS_SQLITE_LOAD(sqlite3_finalize);
         LDDS_SQLITE_LOAD(sqlite3_column_int);
+        LDDS_SQLITE_LOAD(sqlite3_column_int64);
         LDDS_SQLITE_LOAD(sqlite3_column_text);
         LDDS_SQLITE_LOAD(sqlite3_column_blob);
         LDDS_SQLITE_LOAD(sqlite3_column_bytes);

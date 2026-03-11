@@ -162,7 +162,7 @@ public:
      */
     bool publishTopic(const std::string & typeName, const std::shared_ptr<void> & object);
 
-    template<typename T>
+    template<typename T, typename std::enable_if<!std::is_pointer<T>::value, int>::type = 0>
     bool publish(const std::string & topicKey, const T & object)
     {
         const uint32_t topic = m_pTypeRegistry->getTopicByTopicKey(topicKey);
@@ -193,7 +193,7 @@ public:
         return publish(topicKey, *object);
     }
 
-    template<typename T>
+    template<typename T, typename std::enable_if<!std::is_pointer<T>::value, int>::type = 0>
     bool publishTopic(const std::string & typeName, const T & object)
     {
         const uint32_t topic = m_pTypeRegistry->getTopicByTypeName(typeName);
@@ -213,7 +213,7 @@ public:
         return publishSerializedTopic(topic, std::move(payload), typeName);
     }
 
-    template<typename T>
+    template<typename T, typename std::enable_if<!std::is_pointer<T>::value, int>::type = 0>
     bool publishTopicByTopic(uint32_t topic, const T & object)
     {
         std::vector<uint8_t> payload;

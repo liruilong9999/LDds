@@ -210,11 +210,11 @@ size_t LDomain::getHistoryDepth() const noexcept
 }
 
 void LDomain::cacheTopicData(
-    int                         topic,
+    uint32_t                    topic,
     const std::vector<uint8_t> & data,
     const std::string &         dataType)
 {
-    if (topic <= 0)
+    if (topic == 0)
     {
         return;
     }
@@ -243,7 +243,7 @@ void LDomain::cacheTopicData(
     }
 }
 
-std::string LDomain::getDataTypeByTopic(int topic) const
+std::string LDomain::getDataTypeByTopic(uint32_t topic) const
 {
     std::lock_guard<std::mutex> lock(m_topicCacheMutex);
     const auto                  it = m_topicDataTypes.find(topic);
@@ -254,7 +254,7 @@ std::string LDomain::getDataTypeByTopic(int topic) const
     return it->second;
 }
 
-LFindSet LDomain::getFindSetByTopic(int topic) const
+LFindSet LDomain::getFindSetByTopic(uint32_t topic) const
 {
     std::lock_guard<std::mutex> lock(m_topicCacheMutex);
     const auto                  it = m_topicCache.find(topic);
@@ -265,7 +265,7 @@ LFindSet LDomain::getFindSetByTopic(int topic) const
     return LFindSet(it->second);
 }
 
-bool LDomain::getTopicData(int topic, std::vector<uint8_t> & data) const
+bool LDomain::getTopicData(uint32_t topic, std::vector<uint8_t> & data) const
 {
     std::lock_guard<std::mutex> lock(m_topicCacheMutex);
     const auto                  it = m_topicCache.find(topic);
@@ -278,7 +278,7 @@ bool LDomain::getTopicData(int topic, std::vector<uint8_t> & data) const
     return true;
 }
 
-bool LDomain::getNextTopicData(int topic, size_t & cursorFromNewest, std::vector<uint8_t> & data) const
+bool LDomain::getNextTopicData(uint32_t topic, size_t & cursorFromNewest, std::vector<uint8_t> & data) const
 {
     std::lock_guard<std::mutex> lock(m_topicCacheMutex);
     const auto                  it = m_topicCache.find(topic);
@@ -299,7 +299,7 @@ bool LDomain::getNextTopicData(int topic, size_t & cursorFromNewest, std::vector
     return true;
 }
 
-bool LDomain::hasTopicData(int topic) const
+bool LDomain::hasTopicData(uint32_t topic) const
 {
     std::lock_guard<std::mutex> lock(m_topicCacheMutex);
     const auto                  it = m_topicCache.find(topic);

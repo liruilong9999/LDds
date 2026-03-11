@@ -127,22 +127,22 @@ public:
      * @param data 序列化 payload。
      * @param dataType 类型名（可选）。
      */
-    void cacheTopicData(int topic, const std::vector<uint8_t>& data, const std::string& dataType = std::string());
+    void cacheTopicData(uint32_t topic, const std::vector<uint8_t>& data, const std::string& dataType = std::string());
 
     /**
      * @brief 根据 topic 查询数据类型名。
      */
-    std::string getDataTypeByTopic(int topic) const;
+    std::string getDataTypeByTopic(uint32_t topic) const;
 
     /**
      * @brief 获取 topic 历史快照视图。
      */
-    LFindSet getFindSetByTopic(int topic) const;
+    LFindSet getFindSetByTopic(uint32_t topic) const;
 
     /**
      * @brief 获取最新一条 topic 数据。
      */
-    bool getTopicData(int topic, std::vector<uint8_t>& data) const;
+    bool getTopicData(uint32_t topic, std::vector<uint8_t>& data) const;
 
     /**
      * @brief 从新到旧遍历 topic 历史数据。
@@ -151,12 +151,12 @@ public:
      * @param data 输出数据。
      * @return 若还有数据返回 true，并自动推进游标。
      */
-    bool getNextTopicData(int topic, size_t& cursorFromNewest, std::vector<uint8_t>& data) const;
+    bool getNextTopicData(uint32_t topic, size_t& cursorFromNewest, std::vector<uint8_t>& data) const;
 
     /**
      * @brief topic 是否存在缓存数据。
      */
-    bool hasTopicData(int topic) const;
+    bool hasTopicData(uint32_t topic) const;
 
     /**
      * @brief 清空所有 topic 缓存。
@@ -174,8 +174,8 @@ private:
     std::string m_durabilityDbPath;
     uint64_t m_localSequence;
     std::unique_ptr<SqliteDurabilityStore> m_sqliteStore;
-    std::map<int, std::deque<std::vector<uint8_t>>> m_topicCache;
-    std::map<int, std::string> m_topicDataTypes;
+    std::map<uint32_t, std::deque<std::vector<uint8_t>>> m_topicCache;
+    std::map<uint32_t, std::string> m_topicDataTypes;
     mutable std::mutex m_topicCacheMutex;
 };
 

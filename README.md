@@ -1,183 +1,349 @@
 # LDds
 
-轻量级 DDS 风格通信框架，包含传输层、发布订阅调度层、Domain 缓存层、QoS 管理、IDL 解析与代码生成，以及阶段化验证脚本。
+LDds 是一个轻量级 DDS 风格通信框架，包含：
 
-当前发布版本标签：`0.0.1`
+- `LDdsCore` 运行时库
+- `LIdl` IDL 解析与代码生成工具
+- `pub/sub` 示例程序
+- `qos.xml`、`ddsRely.xml` 运行时配置
 
-## 1. 主要能力
+## 1. 目录说明
 
-1. 传输层支持 `UDP/TCP`。
-2. 支持类型注册、主题发布/订阅、回调分发。
-3. 支持 Domain 概念与缓存历史深度控制。
-4. 支持 QoS（可靠性、历史、deadline、domain 等）与 XML 加载。
-5. 内置 IDL 解析器与代码生成工具（`LIdl`）。
-6. 提供阶段化 smoke/stress 脚本与统一测试入口。
+- `src/Lib/LDdsCore`
+  运行时核心库，负责 QoS、传输、主题缓存、动态模块加载和发布订阅。
+- `src/App/LIdl`
+  IDL 工具入口。
+- `src/App/pub`
+  发布示例，使用安装后的 `file1/file2` 生成头文件。
+- `src/App/sub`
+  订阅示例，使用安装后的 `file1/file2` 生成头文件。
+- `bin/config/qos.xml`
+  默认 QoS 配置文件。
+- `bin/config/ddsRely.xml`
+  运行时模块依赖配置，`LDdsCore` 初始化时会自动加载。
+- `bin/lidl`
+  示例 `.lidl` 文件。
 
-## 2. 工程结构
+## 2. 构建仓库
 
-1. `src/Lib/LDdsCore`
-核心库（动态库），包含传输、调度、QoS、IDL、类型系统等。
-
-2. `src/App`
-可执行程序目录：
-- `LIdl`：IDL 编译工具。
-- `LTransportTest`：传输层测试工具。
-- `Example*`：调用示例程序。
-
-3. `src/test`
-单元测试目录：
-- `LDdsCoreUnitTests`：核心库单元测试可执行程序。
-
-4. `scripts`
-阶段验证脚本与辅助脚本：
-- `run_all_stage_tests.ps1`：统一阶段测试入口。
-- `run_src_unit_tests.ps1`：`src/test` 单元测试入口并生成 Markdown 报告。
-- `run_stage*.ps1`：对应阶段 smoke 验证脚本。
-
-5. `cmake`
-工程级 CMake 模块：
-- `module.cmake`：统一 `CreateTarget(...)` 目标创建逻辑。
-
-## 3. CMake 设计说明
-
-在保留现有目录结构和 `CreateTarget(...)` 用法的前提下，已做跨平台改造：
-
-1. 顶层 `CMakeLists.txt` 统一 C++ 标准、编译选项、输出行为。
-2. `module.cmake` 统一目标创建流程，减少子目录重复 CMake 样板。
-3. 传输层改为原生 socket 实现，不再依赖 Qt。
-4. stage 子工程 CMake 去除硬编码绝对路径，改为相对仓库根目录推导。
-5. stage 子工程按平台设置导入库路径：
-- Windows：`.lib + .dll`
-- Linux：`.so`
-- macOS：`.dylib`
-
-## 4. 环境要求
-
-1. CMake `>= 3.16`
-2. C++17 编译器
-- Windows：Visual Studio/MSVC
-- Linux：GCC 或 Clang
-
-可选：
-
-1. Windows 运行时将 `bin` 加入 `PATH`。
-2. Linux 运行时设置 `LD_LIBRARY_PATH` 指向 `./bin/lib`。
-
-## 5. 构建方式
-
-### 5.1 Windows（PowerShell）
+### 2.1 Windows
 
 ```powershell
-cmake -S . -B build
+cmake -S . -B build -A x64
 cmake --build build --config Debug
+cmake --build build --config Release
 ```
 
-### 5.2 Linux（bash）
+### 2.2 运行前
 
-```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
-cmake --build build -j
-```
-
-## 6. 运行示例
-
-### 6.1 Windows
+Windows 下建议把 `bin` 放入 `PATH`：
 
 ```powershell
 $env:PATH = "$PWD\bin;$env:PATH"
-.\bin\ExampleQosInit.exe qos.example.xml
-.\bin\ExampleUdpBytesPubSub.exe
-.\bin\ExampleTypedPubSub.exe
-.\bin\ExampleIdlPipeline.exe
 ```
 
-### 6.2 Linux
+## 3. LIdl 使用方法
 
-```bash
-export LD_LIBRARY_PATH="$PWD/bin/lib:$LD_LIBRARY_PATH"
-./bin/ExampleQosInit qos.example.xml
-./bin/ExampleUdpBytesPubSub
-./bin/ExampleTypedPubSub
-./bin/ExampleIdlPipeline
-```
+### 3.1 基本命令
 
-## 7. 测试与验证
-
-### 7.1 src 单元测试（推荐）
+默认输出根目录是 `bin/generate`，默认安装根目录是输出根目录的上一级。
+如果不传 `-o`，仓库内默认会生成到 `bin/generate/<文件名>`，并安装到 `bin`。
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run_src_unit_tests.ps1 -Config Debug
+.\bin\LIdl.exe -V .\bin\lidl\file2.lidl
 ```
 
-输出：
+上面的命令会自动完成：
 
-1. 执行 `LDdsCoreUnitTests`。
-2. 生成报告：`reports/src_unit_test_report.md`。
+1. 解析 `file2.lidl`
+2. 递归解析并先处理 `#include "file1.lidl"`
+3. 生成 `bin/generate/file1`
+4. 生成 `bin/generate/file2`
+5. 自动编译 `LDdsCore`
+6. 自动编译 `file1` 的 Debug/Release
+7. 自动编译 `file2` 的 Debug/Release
 
-### 7.2 阶段测试总入口
+### 3.2 常用参数
+
+- `-o, --output <dir>`
+  指定生成根目录。
+- `--install <dir>`
+  指定安装根目录。
+- `-I, --include <path>`
+  添加 include 搜索路径。
+- `-l, --language <lang>`
+  目标语言，当前主要使用 `cpp`。
+- `-V, --verbose`
+  打印详细过程。
+- `-s, --strict`
+  启用严格解析。
+- `--platform x64`
+  Windows 下指定 VS 平台。
+
+### 3.3 生成和安装后的目录布局
+
+以 `file2.lidl` 为例，默认执行：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run_all_stage_tests.ps1 -Config Debug
+.\bin\LIdl.exe -V .\bin\lidl\file2.lidl
 ```
 
-默认串行执行并汇总：
+会得到以下结果：
 
-1. stage3
-2. stage4
-3. stage7
-4. stage56
-5. stage8
+- 生成工程目录
+  - `bin/generate/file1`
+  - `bin/generate/file2`
+- 安装头文件
+  - `bin/include/file1/file1_topic.h`
+  - `bin/include/file2/file2_topic.h`
+- 安装导入库
+  - `bin/lib/file1d.lib`
+  - `bin/lib/file1.lib`
+  - `bin/lib/file2d.lib`
+  - `bin/lib/file2.lib`
+- 安装动态库
+  - `bin/file1d.dll`
+  - `bin/file1.dll`
+  - `bin/file2d.dll`
+  - `bin/file2.dll`
 
-可选参数示例：
+## 4. IDL 怎么写
+
+### 4.1 基本规则
+
+- `struct` 表示数据结构
+- `package` 表示命名空间
+- `#include` 表示依赖其他 `.lidl`
+- `TOPIC_NAME = TypeName;` 表示主题绑定
+
+### 4.2 示例
+
+`file1.lidl`
+
+```idl
+package P1 {
+    package P2 {
+        struct Handle {
+            int32 handle;
+            int64 datatime;
+        }
+    }
+
+    struct Param1 : extend P1::P2::Handle {
+        string str1;
+        double data1;
+        int32 data2;
+        vector<int32> data1Vec;
+    }
+}
+
+HANDLE_TOPIC = P1::P2::Handle;
+PARAM1_TOPIC = P1::Param1;
+```
+
+`file2.lidl`
+
+```idl
+#include "file1.lidl"
+
+package P3 {
+    struct TestParam : extend P1::P2::Handle {
+        int32 a;
+    }
+}
+
+TESTPARAM_TOPIC = P3::TestParam;
+```
+
+## 5. 业务代码怎么写
+
+### 5.1 头文件和库依赖
+
+生成并安装完成后，业务代码直接使用安装后的头文件和库：
+
+- 头文件
+  - `bin/include/file1`
+  - `bin/include/file2`
+- 库
+  - `bin/lib/LDdsCore[d].lib`
+  - `bin/lib/file1[d].lib`
+  - `bin/lib/file2[d].lib`
+
+运行时还需要：
+
+- `bin/LDdsCore[d].dll`
+- `bin/file1[d].dll`
+- `bin/file2[d].dll`
+
+### 5.2 发布端代码写法
+
+```cpp
+#include "LDds.h"
+#include "file1_topic.h"
+#include "file2_topic.h"
+
+using namespace LDdsFramework;
+
+LDds publisher;
+publisher.initialize();
+
+P1::Param1 param1;
+param1.handle = 1001;
+param1.datatime = 123456;
+param1.str1 = "hello";
+param1.data1 = 3.14;
+param1.data2 = 7;
+param1.data1Vec = {1, 2, 3};
+
+publisher.publish(FILE1_TOPIC_KEY_PARAM1_TOPIC, param1.get());
+
+P3::TestParam testParam;
+testParam.handle = 2001;
+testParam.datatime = 123456;
+testParam.a = 88;
+
+publisher.publish(FILE2_TOPIC_KEY_TESTPARAM_TOPIC, testParam.get());
+```
+
+### 5.3 订阅端代码写法
+
+最稳的写法是从 `Domain` 缓存里取 payload，再用生成结构体自己的 `deserialize()` 还原：
+
+```cpp
+#include "LDds.h"
+#include "file1_topic.h"
+#include "file2_topic.h"
+
+using namespace LDdsFramework;
+
+LDds subscriber;
+subscriber.initialize();
+
+std::vector<uint8_t> handlePayload;
+if (subscriber.domain().getTopicData(FILE1_TOPIC_ID_HANDLE_TOPIC, handlePayload))
+{
+    P1::P2::Handle data;
+    if (data.deserialize(handlePayload))
+    {
+        data.handle;
+    }
+}
+```
+
+如果业务希望按缓存轮询，也可以这样写：
+
+```cpp
+LFindSet * handleSet = subscriber.sub(FILE1_TOPIC_KEY_HANDLE_TOPIC);
+if (handleSet)
+{
+    P1::P2::Handle * data = handleSet->getFirstData<P1::P2::Handle>();
+    if (data)
+    {
+        data->handle;
+    }
+}
+```
+
+### 5.4 同机测试和跨机部署
+
+- 同机测试
+  建议在代码里给 `TransportConfig` 显式指定不同 `bindPort`，避免本机端口冲突。
+- 跨机部署
+  可以直接使用 `LDds::initialize()`，域号和 QoS 由 `qos.xml` 统一控制。
+
+## 6. qos.xml 怎么写
+
+默认文件是 `bin/config/qos.xml`。
+
+示例：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<qos>
+    <transport type="udp" />
+    <domainId>0</domainId>
+    <enableDomainPortMapping>true</enableDomainPortMapping>
+    <basePort>26000</basePort>
+    <domainPortOffset>20</domainPortOffset>
+    <historyDepth>8</historyDepth>
+    <deadlineMs>1000</deadlineMs>
+    <reliable>false</reliable>
+</qos>
+```
+
+字段说明：
+
+- `transport`
+  当前常用 `udp`
+- `domainId`
+  域号，代码里不需要再写死
+- `enableDomainPortMapping`
+  是否启用按域映射端口
+- `basePort`
+  基础端口
+- `domainPortOffset`
+  域偏移量
+- `historyDepth`
+  每个 topic 的缓存深度
+- `deadlineMs`
+  deadline 监控周期
+- `reliable`
+  是否启用可靠语义
+
+## 7. ddsRely.xml 怎么写
+
+默认文件是 `bin/config/ddsRely.xml`。
+
+它的作用是告诉 `LDdsCore` 运行时要先加载哪些生成模块。
+
+示例：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<ddsRely>
+    <library name="file1" path="../file1d.dll" required="true" />
+    <library name="file2" path="../file2d.dll" required="true" />
+</ddsRely>
+```
+
+注意：
+
+- 顺序必须按依赖顺序写，`file2` 依赖 `file1` 时，`file1` 必须在前
+- Debug 运行时写 `file1d.dll`、`file2d.dll`
+- Release 运行时改成 `file1.dll`、`file2.dll`
+
+## 8. 示例程序
+
+### 8.1 重新生成并安装 file1/file2
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run_all_stage_tests.ps1 -Config Release -SkipStage8
+.\bin\LIdl.exe -V .\bin\lidl\file2.lidl
 ```
 
-### 7.3 Phase 专项脚本
+### 8.2 编译 pub/sub
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\run_stage1_domain_smoke.ps1
-powershell -ExecutionPolicy Bypass -File .\scripts\run_stage2_tcp_reconnect_smoke.ps1
-powershell -ExecutionPolicy Bypass -File .\scripts\run_stage10_discovery_smoke.ps1
-powershell -ExecutionPolicy Bypass -File .\scripts\run_stage11_phase5_smoke.ps1
-powershell -ExecutionPolicy Bypass -File .\scripts\run_stage12_phase6_smoke.ps1
-powershell -ExecutionPolicy Bypass -File .\scripts\run_stage13_phase7_smoke.ps1
+cmake --build build --config Debug --target pub sub
 ```
 
-## 8. IDL 工具使用
+### 8.3 运行
 
-`LIdl` 示例：
+先运行订阅端：
 
 ```powershell
-.\bin\LIdl.exe -V -o .\build\idl_out file1.lidl file2.lidl
+.\bin\sub.exe
 ```
 
-常用参数：
+再运行发布端：
 
-1. `-o, --output <dir>`：输出目录
-2. `-l, --language <lang>`：目标语言（默认 `cpp`）
-3. `-I, --include <path>`：include 路径
-4. `-s, --strict`：严格模式
-5. `-V, --verbose`：详细输出
+```powershell
+.\bin\pub.exe
+```
 
-## 9. 相关文档
+## 9. 当前约定
 
-1. [Domain 规则说明](docs/phase1_domain_rules.md)
-2. [TCP 重连设计说明](docs/phase2_tcp_reconnect.md)
-3. [阶段验收清单](docs/phase_definition_of_done_checklist.md)
-4. [任务派单模板](docs/codex_task_order_template.md)
-
-## 10. 常见问题
-
-1. 构建阶段提示缺少线程库
-- 确认使用 CMake 3.16+，并在 Linux 上安装基础构建工具链（含 pthread）。
-
-2. Windows 运行时找不到 DLL
-- 将仓库 `bin` 目录加入 `PATH`。
-
-3. Linux 运行时找不到 `libLDdsCore*.so`
-- 设置 `LD_LIBRARY_PATH=$PWD/bin/lib:$LD_LIBRARY_PATH`。
-
-4. stage 独立工程链接失败
-- 先构建根工程生成 `bin/lib` 中的 `LDdsCore` 库，再运行 stage 脚本。
+- `app/pub` 和 `app/sub` 使用安装后的 `file1/file2` 产物
+- `LDdsCore` 自己加载 `qos.xml`
+- `LDdsCore` 自己加载 `ddsRely.xml`
+- 代码中不再手写 domainId
+- 主题统一使用字符串 `topicKey`
