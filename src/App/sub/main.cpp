@@ -4,8 +4,8 @@
 #include <thread>
 
 #include "LDds.h"
-#include "file1_topic.h"
-#include "file2_topic.h"
+#include "LCoreRuntime_topic.h"
+#include "LTopType_topic.h"
 
 using namespace LDdsFramework;
 
@@ -15,17 +15,11 @@ int main(int argc, char * argv[])
     (void)argv;
 
     /*
-      Usage:
-      1. Generate and install file1/file2 first:
-         .\bin\LIdl.exe -V .\bin\lidl\file2.lidl
-      2. Do not set ports or domain in code.
-         initialize() reads bin/config/qos.xml.
-      3. Do not manually deserialize in main.
-         sub(topicKey) + getFirstData<T>() returns the generated type directly.
-      4. Use the process singleton directly:
-         initialize();
-         LFindSet * set = sub(topicKey);
-         shutdown();
+      用法:
+      1. 先执行:
+         .\bin\LIdl.exe -V .\bin\lidl\LCoreRuntime.lidl
+      2. 运行时参数全部来自 qos.xml 和 ddsRely.xml
+      3. sub(topicKey) + getFirstData<T>() 直接拿生成结构体，不需要手写反序列化。
     */
 
     dds().setLogCallback(
@@ -48,7 +42,7 @@ int main(int argc, char * argv[])
     {
         if (!gotHandle)
         {
-            LFindSet * handleSet = sub(FILE1_TOPIC_KEY_HANDLE_TOPIC);
+            LFindSet * handleSet = sub(LTOPTYPE_TOPIC_KEY_HANDLE_TOPIC);
             if (handleSet != nullptr)
             {
                 P1::P2::Handle * data = handleSet->getFirstData<P1::P2::Handle>();
@@ -62,7 +56,7 @@ int main(int argc, char * argv[])
 
         if (!gotTestParam)
         {
-            LFindSet * testParamSet = sub(FILE2_TOPIC_KEY_TESTPARAM_TOPIC);
+            LFindSet * testParamSet = sub(LCORERUNTIME_TOPIC_KEY_TESTPARAM_TOPIC);
             if (testParamSet != nullptr)
             {
                 P3::TestParam * data = testParamSet->getFirstData<P3::TestParam>();
@@ -85,8 +79,8 @@ int main(int argc, char * argv[])
     if (!gotHandle || !gotTestParam)
     {
         std::cerr << "[sub] timeout waiting message"
-                  << " handleTopic=" << FILE1_TOPIC_KEY_HANDLE_TOPIC
-                  << " testParamTopic=" << FILE2_TOPIC_KEY_TESTPARAM_TOPIC
+                  << " handleTopic=" << LTOPTYPE_TOPIC_KEY_HANDLE_TOPIC
+                  << " testParamTopic=" << LCORERUNTIME_TOPIC_KEY_TESTPARAM_TOPIC
                   << " error=" << dds().getLastError() << std::endl;
         shutdown();
         return EXIT_FAILURE;

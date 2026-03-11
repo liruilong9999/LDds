@@ -4,8 +4,8 @@
 #include <thread>
 
 #include "LDds.h"
-#include "file1_topic.h"
-#include "file2_topic.h"
+#include "LCoreRuntime_topic.h"
+#include "LTopType_topic.h"
 
 using namespace LDdsFramework;
 
@@ -26,17 +26,13 @@ int main(int argc, char * argv[])
     (void)argv;
 
     /*
-      Usage:
-      1. Generate and install file1/file2 first:
-         .\bin\LIdl.exe -V .\bin\lidl\file2.lidl
-      2. Do not set domainId, ports, or qos in code.
-         LDdsCore loads them from bin/config/qos.xml.
-      3. Do not manually load file1/file2 dll in code.
-         LDdsCore loads them from bin/config/ddsRely.xml.
-      4. Use the process singleton directly:
-         initialize();
-         publish(topicKey, object.get());
-         shutdown();
+      用法:
+      1. 先执行:
+         .\bin\LIdl.exe -V .\bin\lidl\LCoreRuntime.lidl
+      2. 运行时参数全部来自:
+         - bin/config/qos.xml
+         - bin/config/ddsRely.xml
+      3. main 里不需要构造 LDds，也不需要手写序列化。
     */
 
     dds().setLogCallback(
@@ -66,11 +62,11 @@ int main(int argc, char * argv[])
     {
         if (!handlePublished)
         {
-            handlePublished = publish(FILE1_TOPIC_KEY_HANDLE_TOPIC, handle.get());
+            handlePublished = publish(LTOPTYPE_TOPIC_KEY_HANDLE_TOPIC, handle.get());
         }
         if (!testParamPublished)
         {
-            testParamPublished = publish(FILE2_TOPIC_KEY_TESTPARAM_TOPIC, testParam.get());
+            testParamPublished = publish(LCORERUNTIME_TOPIC_KEY_TESTPARAM_TOPIC, testParam.get());
         }
         if (handlePublished && testParamPublished)
         {
@@ -87,8 +83,8 @@ int main(int argc, char * argv[])
     }
 
     std::cout << "[pub] result=ok"
-              << " handleTopic=" << FILE1_TOPIC_KEY_HANDLE_TOPIC
-              << " testParamTopic=" << FILE2_TOPIC_KEY_TESTPARAM_TOPIC
+              << " handleTopic=" << LTOPTYPE_TOPIC_KEY_HANDLE_TOPIC
+              << " testParamTopic=" << LCORERUNTIME_TOPIC_KEY_TESTPARAM_TOPIC
               << " handle.handle=" << handle.handle
               << " testParam.a=" << testParam.a << std::endl;
 

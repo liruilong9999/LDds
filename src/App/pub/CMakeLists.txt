@@ -8,6 +8,6 @@ set(SELF_LIBRARY_LIST "LDdsCore")
 CreateTarget(${ProjectName} "ExeCMD")
 
 target_include_directories(${ProjectName} PRIVATE
-    "${ROOT_DIR}/bin/include/file1"
-    "${ROOT_DIR}/bin/include/file2"
+    "${ROOT_DIR}/bin/include/LTopType"
+    "${ROOT_DIR}/bin/include/LCoreRuntime"
 )

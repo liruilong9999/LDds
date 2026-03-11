@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ddsRely>
     <!--
-      调试版示例默认按依赖顺序加载:
-      1. file1d.dll
-      2. file2d.dll
-      file2 依赖 file1，所以必须排在 file1 后面。
+      Debug 默认加载顺序:
+      1. LTopTyped.dll
+      2. LCoreRuntimed.dll
+      LCoreRuntime 依赖 LTopType，所以 LTopType 必须在前。
 
-      如果运行 Release 版本，请把下面的 d 后缀改成无后缀版本:
-      file1.dll / file2.dll
+      Release 运行时改成:
+      LTopType.dll / LCoreRuntime.dll
     -->
-    <library name="file1" path="../file1d.dll" required="true" />
-    <library name="file2" path="../file2d.dll" required="true" />
+    <library name="LTopType" path="../LTopTyped.dll" required="true" />
+    <library name="LCoreRuntime" path="../LCoreRuntimed.dll" required="true" />
 </ddsRely>
