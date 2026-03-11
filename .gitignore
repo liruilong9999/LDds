@@ -7,3 +7,4 @@
 # Qt Creator
 CMakeLists.txt.user
 .claude/*
+/z_dds_install/*

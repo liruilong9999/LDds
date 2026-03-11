@@ -68,3 +68,19 @@ message(STATUS "Compiler: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}
 include("${ROOT_DIR}/cmake/module.cmake")
 
 add_subdirectory(src)
+
+
+install(DIRECTORY "${ROOT_DIR}/src/Lib/" DESTINATION "${ROOT_DIR}/bin/include"
+        FILES_MATCHING PATTERN "*.h" PATTERN "*.hpp")
+
+# 安装到目标目录，为了作为库
+install(DIRECTORY "${ROOT_DIR}/bin/include" DESTINATION "${ROOT_DIR}/z_dds_install")
+
+file(GLOB LIB_FILES "${ROOT_DIR}/bin/lib/*.lib") 
+install(FILES ${LIB_FILES} DESTINATION "${ROOT_DIR}/z_dds_install/lib")
+
+file(GLOB DLL_FILES "${ROOT_DIR}/bin/*.dll") 
+install(FILES ${DLL_FILES} DESTINATION "${ROOT_DIR}/z_dds_install")
+
+file(GLOB DLL_FILES "${ROOT_DIR}/bin/Lidl.exe") 
+install(FILES ${DLL_FILES} DESTINATION "${ROOT_DIR}/z_dds_install")
