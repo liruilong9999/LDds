@@ -3,7 +3,7 @@
 LDds 是一个轻量级 DDS 风格通信框架，包含：
 
 - `LDdsCore` 运行时库
-- `LIdl` IDL 解析与代码生成工具
+- `LIdl` IDL 解析和代码生成工具
 - `pub/sub` 示例程序
 - `qos.xml`、`ddsRely.xml` 运行时配置
 
@@ -14,15 +14,15 @@ LDds 是一个轻量级 DDS 风格通信框架，包含：
 - `src/App/LIdl`
   IDL 工具入口。
 - `src/App/pub`
-  发布示例，使用安装后的 `file1/file2` 生成头文件。
+  发布示例，当前使用 `LTopType` 和 `LCoreRuntime` 生成产物。
 - `src/App/sub`
-  订阅示例，使用安装后的 `file1/file2` 生成头文件。
+  订阅示例，当前使用 `LTopType` 和 `LCoreRuntime` 生成产物。
 - `bin/config/qos.xml`
   默认 QoS 配置文件。
 - `bin/config/ddsRely.xml`
-  运行时模块依赖配置，`LDdsCore` 初始化时会自动加载。
+  运行时动态库依赖加载顺序。
 - `bin/lidl`
-  示例 `.lidl` 文件。
+  当前示例 `.lidl` 文件。
 
 ## 2. 构建仓库
 
@@ -36,7 +36,7 @@ cmake --build build --config Release
 
 ### 2.2 运行前
 
-Windows 下建议把 `bin` 放入 `PATH`：
+建议把 `bin` 加入 `PATH`：
 
 ```powershell
 $env:PATH = "$PWD\bin;$env:PATH"
@@ -46,203 +46,169 @@ $env:PATH = "$PWD\bin;$env:PATH"
 
 如果机器上没有安装 PowerShell 7，系统里可能只有 `powershell.exe` 而没有 `pwsh.exe`。
 
-本仓库已经做了兼容处理：
+仓库已经做了兼容处理：
 
-- 根工程 `cmake --build` 会自动兼容 `pwsh.exe`
-- `LIdl` 生成出来的工程也会自动兼容 `pwsh.exe`
+- 根工程 `cmake --build` 可兼容 `pwsh.exe`
+- `LIdl` 生成出来的工程也可兼容 `pwsh.exe`
 
-所以不需要手动修改 vcpkg 配置，也不需要强制安装 PowerShell 7。
+所以不需要手动修改 vcpkg 配置。
 
 ## 3. LIdl 使用方法
 
 ### 3.1 基本命令
 
-默认输出根目录是 `bin/generate`，默认安装根目录是输出根目录的上一级。
-如果不传 `-o`，仓库内默认会生成到 `bin/generate/<文件名>`，并安装到 `bin`。
+当前示例以 `LCoreRuntime.lidl` 为入口，它会递归包含 `LTopType.lidl`。
 
 ```powershell
-.\bin\LIdl.exe -V .\bin\lidl\file2.lidl
+.\bin\LIdl.exe -V .\bin\lidl\LCoreRuntime.lidl
 ```
 
-上面的命令会自动完成：
+这条命令会自动完成：
 
-1. 解析 `file2.lidl`
-2. 递归解析并先处理 `#include "file1.lidl"`
-3. 生成 `bin/generate/file1`
-4. 生成 `bin/generate/file2`
-5. 自动编译 `LDdsCore`
-6. 自动编译 `file1` 的 Debug/Release
-7. 自动编译 `file2` 的 Debug/Release
+1. 解析 `LCoreRuntime.lidl`
+2. 递归解析并先处理 `LTopType.lidl`
+3. 生成 `bin/generate/LTopType`
+4. 生成 `bin/generate/LCoreRuntime`
+5. 自动编译生成模块的 Debug/Release
+6. 安装头文件、`.lib`、`.dll` 到默认安装目录
 
 ### 3.2 常用参数
 
 - `-o, --output <dir>`
-  指定生成根目录。
+  指定生成根目录，默认是 `bin/generate`
 - `--install <dir>`
-  指定安装根目录。
+  指定安装根目录，默认是输出根目录的上一级
 - `-I, --include <path>`
-  添加 include 搜索路径。
+  添加 include 搜索路径
 - `-l, --language <lang>`
-  目标语言，当前主要使用 `cpp`。
+  指定目标语言，当前主要使用 `cpp`
 - `-V, --verbose`
-  打印详细过程。
+  打印详细过程
 - `-s, --strict`
-  启用严格解析。
+  启用严格解析
 - `--platform x64`
-  Windows 下指定 VS 平台。
+  Windows 下指定 VS 平台
 
-### 3.3 生成和安装后的目录布局
+### 3.3 默认生成和安装布局
 
-以 `file2.lidl` 为例，默认执行：
+执行：
 
 ```powershell
-.\bin\LIdl.exe -V .\bin\lidl\file2.lidl
+.\bin\LIdl.exe -V .\bin\lidl\LCoreRuntime.lidl
 ```
 
-会得到以下结果：
+默认会得到：
 
 - 生成工程目录
-  - `bin/generate/file1`
-  - `bin/generate/file2`
+  - `bin/generate/LTopType`
+  - `bin/generate/LCoreRuntime`
 - 安装头文件
-  - `bin/include/file1/file1_topic.h`
-  - `bin/include/file2/file2_topic.h`
+  - `bin/include/LTopType/LTopType_topic.h`
+  - `bin/include/LCoreRuntime/LCoreRuntime_topic.h`
 - 安装导入库
-  - `bin/lib/file1d.lib`
-  - `bin/lib/file1.lib`
-  - `bin/lib/file2d.lib`
-  - `bin/lib/file2.lib`
+  - `bin/lib/LTopTyped.lib`
+  - `bin/lib/LTopType.lib`
+  - `bin/lib/LCoreRuntimed.lib`
+  - `bin/lib/LCoreRuntime.lib`
 - 安装动态库
-  - `bin/file1d.dll`
-  - `bin/file1.dll`
-  - `bin/file2d.dll`
-  - `bin/file2.dll`
+  - `bin/LTopTyped.dll`
+  - `bin/LTopType.dll`
+  - `bin/LCoreRuntimed.dll`
+  - `bin/LCoreRuntime.dll`
 
-## 4. IDL 怎么写
+## 4. 当前 IDL 示例
 
-### 4.1 基本规则
+### 4.1 `LTopType.lidl`
 
-- `struct` 表示数据结构
-- `package` 表示命名空间
-- `#include` 表示依赖其他 `.lidl`
-- `TOPIC_NAME = TypeName;` 表示主题绑定
+它定义了基础类型和主题：
 
-### 4.2 示例
+- `P1::P2::Handle`
+- `P1::Param1`
+- `LTopType::HANDLE_TOPIC`
+- `LTopType::PARAM1_TOPIC`
 
-`file1.lidl`
+### 4.2 `LCoreRuntime.lidl`
 
-```idl
-package P1 {
-    package P2 {
-        struct Handle {
-            int32 handle;
-            int64 datatime;
-        }
-    }
+它依赖 `LTopType.lidl`，并定义：
 
-    struct Param1 : extend P1::P2::Handle {
-        string str1;
-        double data1;
-        int32 data2;
-        vector<int32> data1Vec;
-    }
-}
-
-HANDLE_TOPIC = P1::P2::Handle;
-PARAM1_TOPIC = P1::Param1;
-```
-
-`file2.lidl`
-
-```idl
-#include "file1.lidl"
-
-package P3 {
-    struct TestParam : extend P1::P2::Handle {
-        int32 a;
-    }
-}
-
-TESTPARAM_TOPIC = P3::TestParam;
-```
+- `P3::TestParam`
+- `LCoreRuntime::TESTPARAM_TOPIC`
 
 ## 5. 业务代码怎么写
 
-### 5.1 头文件和库依赖
+### 5.1 头文件和库
 
-生成并安装完成后，业务代码直接使用安装后的头文件和库：
+生成并安装完成后，业务工程直接使用：
 
 - 头文件
-  - `bin/include/file1`
-  - `bin/include/file2`
+  - `bin/include/LTopType`
+  - `bin/include/LCoreRuntime`
 - 库
   - `bin/lib/LDdsCore[d].lib`
-  - `bin/lib/file1[d].lib`
-  - `bin/lib/file2[d].lib`
+  - `bin/lib/LTopType[d].lib`
+  - `bin/lib/LCoreRuntime[d].lib`
 
-运行时还需要：
+运行时需要：
 
 - `bin/LDdsCore[d].dll`
-- `bin/file1[d].dll`
-- `bin/file2[d].dll`
+- `bin/LTopType[d].dll`
+- `bin/LCoreRuntime[d].dll`
 
-### 5.2 发布端代码写法
+### 5.2 单例接口
+
+现在已经支持进程内单例，不需要手动构造 `LDds`：
+
+```cpp
+using namespace LDdsFramework;
+
+initialize();
+publish(topicKey, object.get());
+LFindSet * set = sub(topicKey);
+shutdown();
+```
+
+也可以显式取单例对象：
+
+```cpp
+LDds::instance().initialize();
+LDds::instance().publish(LTOPTYPE_TOPIC_KEY_HANDLE_TOPIC, handle.get());
+```
+
+### 5.3 发布端代码
 
 ```cpp
 #include "LDds.h"
-#include "file1_topic.h"
-#include "file2_topic.h"
+#include "LCoreRuntime_topic.h"
+#include "LTopType_topic.h"
 
 using namespace LDdsFramework;
 
 initialize();
 
-P1::Param1 param1;
-param1.handle = 1001;
-param1.datatime = 123456;
-param1.str1 = "hello";
-param1.data1 = 3.14;
-param1.data2 = 7;
-param1.data1Vec = {1, 2, 3};
-
-publish(FILE1_TOPIC_KEY_PARAM1_TOPIC, param1.get());
+P1::P2::Handle handle;
+handle.handle = 1001;
+handle.datatime = 123456;
+publish(LTOPTYPE_TOPIC_KEY_HANDLE_TOPIC, handle.get());
 
 P3::TestParam testParam;
 testParam.handle = 2001;
 testParam.datatime = 123456;
 testParam.a = 88;
-
-publish(FILE2_TOPIC_KEY_TESTPARAM_TOPIC, testParam.get());
+publish(LCORERUNTIME_TOPIC_KEY_TESTPARAM_TOPIC, testParam.get());
 ```
 
-### 5.3 订阅端代码写法
-
-最稳的写法是从 `Domain` 缓存里取 payload，再用生成结构体自己的 `deserialize()` 还原：
+### 5.4 订阅端代码
 
 ```cpp
 #include "LDds.h"
-#include "file1_topic.h"
-#include "file2_topic.h"
+#include "LCoreRuntime_topic.h"
+#include "LTopType_topic.h"
 
 using namespace LDdsFramework;
 
 initialize();
 
-std::vector<uint8_t> handlePayload;
-if (dds().domain().getTopicData(FILE1_TOPIC_ID_HANDLE_TOPIC, handlePayload))
-{
-    P1::P2::Handle data;
-    if (data.deserialize(handlePayload))
-    {
-        data.handle;
-    }
-}
-```
-
-如果业务希望按缓存轮询，也可以这样写：
-
-```cpp
-LFindSet * handleSet = sub(FILE1_TOPIC_KEY_HANDLE_TOPIC);
+LFindSet * handleSet = sub(LTOPTYPE_TOPIC_KEY_HANDLE_TOPIC);
 if (handleSet)
 {
     P1::P2::Handle * data = handleSet->getFirstData<P1::P2::Handle>();
@@ -253,20 +219,11 @@ if (handleSet)
 }
 ```
 
-现在也可以直接使用进程单例对象：
+这套写法下：
 
-```cpp
-LDds::instance().initialize();
-LDds::instance().publish(FILE1_TOPIC_KEY_HANDLE_TOPIC, handle.get());
-```
-
-### 5.4 同机测试和跨机部署
-
-- 同机测试
-  建议在代码里给 `TransportConfig` 显式指定不同 `bindPort`，避免本机端口冲突。
-- 跨机部署
-  可以直接使用 `LDdsFramework::initialize()` 或 `LDds::instance().initialize()`，
-  域号和 QoS 由 `qos.xml` 统一控制。
+- 不需要在 `main` 里手写序列化
+- 不需要在 `main` 里手写反序列化
+- 不需要自己构造 `LDds`
 
 ## 6. qos.xml 怎么写
 
@@ -288,56 +245,48 @@ LDds::instance().publish(FILE1_TOPIC_KEY_HANDLE_TOPIC, handle.get());
 </qos>
 ```
 
-字段说明：
+含义：
 
-- `transport`
-  当前常用 `udp`
 - `domainId`
-  域号，代码里不需要再写死
-- `enableDomainPortMapping`
-  是否启用按域映射端口
-- `basePort`
-  基础端口
-- `domainPortOffset`
-  域偏移量
+  统一域号，代码里不需要再写死
+- `basePort` + `domainPortOffset`
+  默认端口映射规则
 - `historyDepth`
-  每个 topic 的缓存深度
+  topic 缓存深度
 - `deadlineMs`
-  deadline 监控周期
-- `reliable`
-  是否启用可靠语义
+  deadline 检查周期
 
 ## 7. ddsRely.xml 怎么写
 
 默认文件是 `bin/config/ddsRely.xml`。
 
-它的作用是告诉 `LDdsCore` 运行时要先加载哪些生成模块。
-
-示例：
+当前示例：
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <ddsRely>
-    <library name="file1" path="../file1d.dll" required="true" />
-    <library name="file2" path="../file2d.dll" required="true" />
+    <library name="LTopType" path="../LTopTyped.dll" required="true" />
+    <library name="LCoreRuntime" path="../LCoreRuntimed.dll" required="true" />
 </ddsRely>
 ```
 
 注意：
 
-- 顺序必须按依赖顺序写，`file2` 依赖 `file1` 时，`file1` 必须在前
-- Debug 运行时写 `file1d.dll`、`file2d.dll`
-- Release 运行时改成 `file1.dll`、`file2.dll`
+- 顺序必须按依赖顺序写
+- `LCoreRuntime` 依赖 `LTopType`，所以 `LTopType` 必须在前
+- Release 运行时改成：
+  - `LTopType.dll`
+  - `LCoreRuntime.dll`
 
-## 8. 示例程序
+## 8. 当前示例程序
 
-### 8.1 重新生成并安装 file1/file2
+### 8.1 先生成
 
 ```powershell
-.\bin\LIdl.exe -V .\bin\lidl\file2.lidl
+.\bin\LIdl.exe -V .\bin\lidl\LCoreRuntime.lidl
 ```
 
-### 8.2 编译 pub/sub
+### 8.2 再编译
 
 ```powershell
 cmake --build build --config Debug --target pub sub
@@ -345,22 +294,32 @@ cmake --build build --config Debug --target pub sub
 
 ### 8.3 运行
 
-先运行订阅端：
+先运行：
 
 ```powershell
 .\bin\sub.exe
 ```
 
-再运行发布端：
+再运行：
 
 ```powershell
 .\bin\pub.exe
 ```
 
+当前联调结果：
+
+- 发布端发送 `LTopType::HANDLE_TOPIC`
+- 发布端发送 `LCoreRuntime::TESTPARAM_TOPIC`
+- 订阅端可正确收到并还原：
+  - `handle.handle=1001`
+  - `testParam.handle=2001`
+  - `testParam.a=88`
+
 ## 9. 当前约定
 
-- `app/pub` 和 `app/sub` 使用安装后的 `file1/file2` 产物
+- `app/pub` 和 `app/sub` 使用安装后的 `LTopType/LCoreRuntime` 产物
 - `LDdsCore` 自己加载 `qos.xml`
 - `LDdsCore` 自己加载 `ddsRely.xml`
-- 代码中不再手写 domainId
+- 代码里不再手写 `domainId`
+- 默认使用单例接口
 - 主题统一使用字符串 `topicKey`
