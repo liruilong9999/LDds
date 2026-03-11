@@ -10,4 +10,4 @@ CreateTarget(${ProjectName} "ExeCMD")
 target_include_directories(${ProjectName} PRIVATE
     "${ROOT_DIR}/bin/include/file1"
     "${ROOT_DIR}/bin/include/file2"
-)
+) 

@@ -1,12 +1,16 @@
-package P1 {
-    package P2 {
-        struct Handle {
+package P1 
+{
+    package P2 
+	{
+        struct Handle 
+		{
             int32 handle;
             int64 datatime;
         }
     }
 
-    struct Param1 : extend P1::P2::Handle {
+    struct Param1 : extend P1::P2::Handle 
+	{
         string str1;
         double data1;
         int32 data2;

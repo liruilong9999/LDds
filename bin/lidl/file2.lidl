@@ -1,9 +1,0 @@
-#include "file1.lidl"
-
-package P3 {
-    struct TestParam : extend P1::P2::Handle {
-        int32 a;
-    }
-}
-
-TESTPARAM_TOPIC = P3::TestParam;
