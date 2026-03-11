@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <clocale>
+#include <filesystem>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -304,18 +305,28 @@ int main(int argc, char* argv[])
         LIdlGenerator generator(options.targetLanguage);
         generator.setOptions(generatorOptions);
 
-        const std::string outputPath = options.outputDirectory + "/" + inputFile + ".gen";
+        const std::filesystem::path inputPath(inputFile);
+        const std::string outputPath =
+            (std::filesystem::path(options.outputDirectory) / inputPath.stem()).string();
         GenerationResult genResult = generator.generate(parseResult, outputPath);
 
         if (!genResult.success)
         {
             std::cerr << "错误: 代码生成失败 " << inputFile << std::endl;
+            for (const auto & message : genResult.messages)
+            {
+                std::cerr << "  - " << message << std::endl;
+            }
             allSuccess = false;
             continue;
         }
 
         if (options.verbose)
         {
+            for (const auto & message : genResult.messages)
+            {
+                std::cout << "  - " << message << std::endl;
+            }
             std::cout << "生成完成: " << genResult.outputPath
                       << " (共 " << genResult.linesGenerated << " 行)" << std::endl;
         }

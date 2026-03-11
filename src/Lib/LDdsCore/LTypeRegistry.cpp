@@ -1,6 +1,67 @@
 #include "LTypeRegistry.h"
 
+#include <algorithm>
+#include <mutex>
+
 namespace LDdsFramework {
+namespace {
+
+struct GeneratedModuleEntry
+{
+    std::string moduleName;
+    GeneratedModuleRegisterFn registerFn;
+};
+
+std::mutex & generatedModuleMutex()
+{
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::vector<GeneratedModuleEntry> & generatedModules()
+{
+    static std::vector<GeneratedModuleEntry> modules;
+    return modules;
+}
+
+uint32_t fnv1aHash32(const std::string & value) noexcept
+{
+    uint32_t hash = 2166136261U;
+    for (const unsigned char ch : value)
+    {
+        hash ^= static_cast<uint32_t>(ch);
+        hash *= 16777619U;
+    }
+    return (hash == 0U) ? 1U : hash;
+}
+
+} // namespace
+
+bool registerGeneratedModule(
+    const char *              moduleName,
+    GeneratedModuleRegisterFn registerFn)
+{
+    if (moduleName == nullptr || moduleName[0] == '\0' || registerFn == nullptr)
+    {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(generatedModuleMutex());
+    auto & modules = generatedModules();
+    const auto it = std::find_if(
+        modules.begin(),
+        modules.end(),
+        [moduleName](const GeneratedModuleEntry & entry) {
+            return entry.moduleName == moduleName;
+        });
+    if (it != modules.end())
+    {
+        return true;
+    }
+
+    modules.push_back({moduleName, registerFn});
+    return true;
+}
 
 bool LTypeRegistry::registerType(
     const std::string & typeName,
@@ -15,11 +76,11 @@ bool LTypeRegistry::registerType(
         return false;
     }
 
-    auto newEntry         = std::make_shared<TypeEntry>();
-    newEntry->typeName    = typeName;
-    newEntry->topic       = topic;
-    newEntry->factory     = std::move(factory);
-    newEntry->serializer  = std::move(serializer);
+    auto newEntry          = std::make_shared<TypeEntry>();
+    newEntry->typeName     = typeName;
+    newEntry->topic        = topic;
+    newEntry->factory      = std::move(factory);
+    newEntry->serializer   = std::move(serializer);
     newEntry->deserializer = std::move(deserializer);
 
     std::unique_lock<std::shared_mutex> lock(m_mutex);
@@ -36,8 +97,68 @@ bool LTypeRegistry::registerType(
         return false;
     }
 
-    m_entriesByTopic[topic]     = std::move(newEntry);
+    if (topicIt != m_entriesByTopic.end() && topicIt->second != nullptr)
+    {
+        newEntry->topicKey = topicIt->second->topicKey;
+    }
+
+    m_entriesByTopic[topic] = std::move(newEntry);
     m_topicByTypeName[typeName] = topic;
+    return true;
+}
+
+bool LTypeRegistry::registerTopicType(
+    const std::string & topicKey,
+    const std::string & typeName,
+    TypeFactory         factory,
+    SerializeFn         serializer,
+    DeserializeFn       deserializer
+)
+{
+    const uint32_t topic = makeTopicId(topicKey);
+    if (topicKey.empty() || typeName.empty() || topic == 0 || !factory || !serializer || !deserializer)
+    {
+        return false;
+    }
+
+    auto newEntry          = std::make_shared<TypeEntry>();
+    newEntry->typeName     = typeName;
+    newEntry->topicKey     = topicKey;
+    newEntry->topic        = topic;
+    newEntry->factory      = std::move(factory);
+    newEntry->serializer   = std::move(serializer);
+    newEntry->deserializer = std::move(deserializer);
+
+    std::unique_lock<std::shared_mutex> lock(m_mutex);
+
+    const auto topicIt = m_entriesByTopic.find(topic);
+    if (topicIt != m_entriesByTopic.end())
+    {
+        if (topicIt->second->typeName != typeName)
+        {
+            return false;
+        }
+        if (!topicIt->second->topicKey.empty() && topicIt->second->topicKey != topicKey)
+        {
+            return false;
+        }
+    }
+
+    const auto nameIt = m_topicByTypeName.find(typeName);
+    if (nameIt != m_topicByTypeName.end() && nameIt->second != topic)
+    {
+        return false;
+    }
+
+    const auto keyIt = m_topicByKey.find(topicKey);
+    if (keyIt != m_topicByKey.end() && keyIt->second != topic)
+    {
+        return false;
+    }
+
+    m_entriesByTopic[topic] = std::move(newEntry);
+    m_topicByTypeName[typeName] = topic;
+    m_topicByKey[topicKey] = topic;
     return true;
 }
 
@@ -63,6 +184,17 @@ uint32_t LTypeRegistry::getTopicByTypeName(const std::string & typeName) const
     return it->second;
 }
 
+uint32_t LTypeRegistry::getTopicByTopicKey(const std::string & topicKey) const
+{
+    std::shared_lock<std::shared_mutex> lock(m_mutex);
+    const auto                          it = m_topicByKey.find(topicKey);
+    if (it == m_topicByKey.end())
+    {
+        return 0;
+    }
+    return it->second;
+}
+
 std::string LTypeRegistry::getTypeNameByTopic(uint32_t topic) const
 {
     std::shared_lock<std::shared_mutex> lock(m_mutex);
@@ -72,6 +204,17 @@ std::string LTypeRegistry::getTypeNameByTopic(uint32_t topic) const
         return std::string();
     }
     return it->second->typeName;
+}
+
+std::string LTypeRegistry::getTopicKeyByTopic(uint32_t topic) const
+{
+    std::shared_lock<std::shared_mutex> lock(m_mutex);
+    const auto                          it = m_entriesByTopic.find(topic);
+    if (it == m_entriesByTopic.end() || !it->second)
+    {
+        return std::string();
+    }
+    return it->second->topicKey;
 }
 
 bool LTypeRegistry::serializeByTopic(
@@ -129,6 +272,75 @@ bool LTypeRegistry::hasTopic(uint32_t topic) const
 {
     std::shared_lock<std::shared_mutex> lock(m_mutex);
     return m_entriesByTopic.find(topic) != m_entriesByTopic.end();
+}
+
+std::vector<uint32_t> LTypeRegistry::getRegisteredTopics() const
+{
+    std::vector<uint32_t> topics;
+
+    std::shared_lock<std::shared_mutex> lock(m_mutex);
+    topics.reserve(m_entriesByTopic.size());
+    for (const auto & entry : m_entriesByTopic)
+    {
+        if (entry.first != 0)
+        {
+            topics.push_back(entry.first);
+        }
+    }
+
+    std::sort(topics.begin(), topics.end());
+    return topics;
+}
+
+bool LTypeRegistry::applyGeneratedModules(std::vector<std::string> * appliedModules)
+{
+    std::vector<GeneratedModuleEntry> modules;
+    {
+        std::lock_guard<std::mutex> lock(generatedModuleMutex());
+        modules = generatedModules();
+    }
+
+    for (const auto & module : modules)
+    {
+        if (module.moduleName.empty() || module.registerFn == nullptr)
+        {
+            continue;
+        }
+
+        {
+            std::shared_lock<std::shared_mutex> lock(m_mutex);
+            if (m_appliedGeneratedModules.find(module.moduleName) != m_appliedGeneratedModules.end())
+            {
+                continue;
+            }
+        }
+
+        if (!module.registerFn(*this))
+        {
+            return false;
+        }
+
+        {
+            std::unique_lock<std::shared_mutex> lock(m_mutex);
+            m_appliedGeneratedModules.insert(module.moduleName);
+        }
+
+        if (appliedModules != nullptr)
+        {
+            appliedModules->push_back(module.moduleName);
+        }
+    }
+
+    return true;
+}
+
+uint32_t LTypeRegistry::makeTopicId(const std::string & topicKey) noexcept
+{
+    if (topicKey.empty())
+    {
+        return 0;
+    }
+    return fnv1aHash32(topicKey);
 }
 
 } // namespace LDdsFramework

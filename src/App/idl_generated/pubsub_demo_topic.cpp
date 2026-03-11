@@ -1,11 +1,12 @@
 #include "pubsub_demo_topic.h"
 
 namespace LDdsFramework {
-void registerPubsubDemoTypes(LTypeRegistry & registry)
+
+bool registerPubsubDemoTypes(LTypeRegistry & registry)
 {
-    registry.registerType<Demo::SensorSample>(
+    return registry.registerTopicType<Demo::SensorSample>(
+        PUBSUB_DEMO_TOPIC_KEY_SENSOR_SAMPLE_TOPIC,
         "Demo::SensorSample",
-        static_cast<uint32_t>(PubsubDemoTopicId::SENSOR_SAMPLE_TOPIC),
         [](const Demo::SensorSample & object, std::vector<uint8_t> & outPayload) -> bool {
             outPayload = object.serialize();
             return true;
@@ -15,4 +16,26 @@ void registerPubsubDemoTypes(LTypeRegistry & registry)
         }
     );
 }
+
+extern "C" PUBSUB_DEMO_IDL_API bool registerPubsubDemoIdlModule(LTypeRegistry & registry)
+{
+    return registerPubsubDemoTypes(registry);
+}
+
 } // namespace LDdsFramework
+
+namespace {
+
+struct PubsubDemoAutoModuleRegistrar
+{
+    PubsubDemoAutoModuleRegistrar()
+    {
+        LDdsFramework::registerGeneratedModule(
+            "pubsub_demo",
+            &LDdsFramework::registerPubsubDemoIdlModule);
+    }
+};
+
+static PubsubDemoAutoModuleRegistrar g_pubsubDemoAutoModuleRegistrar;
+
+} // namespace

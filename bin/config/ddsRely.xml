@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ddsRely>
+    <!--
+      依赖顺序从底层到上层排布。
+      file2 依赖 file1，所以 file1 必须排在 file2 前面。
+      generated 的 DLL 不存在时会被跳过；生成并编译完成后去掉 optional 或改成 required 即可强校验。
+    -->
+    <library name="file1" path="../lidl/generated/file1/lib/dll/file1d.dll" optional="true" />
+    <library name="file2" path="../lidl/generated/file2/lib/dll/file2d.dll" optional="true" />
+    <library name="pubsub_demo" path="../pubsub_demod.dll" required="true" />
+</ddsRely>

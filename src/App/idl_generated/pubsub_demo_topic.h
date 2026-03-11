@@ -9,39 +9,37 @@
 #include "LTypeRegistry.h"
 
 namespace LDdsFramework {
-enum class PubsubDemoTopicId : uint32_t
-{
-    Invalid = 0,
-    SENSOR_SAMPLE_TOPIC = 1969566058
-};
 
 #define PUBSUB_DEMO_TOPIC_NAME_SENSOR_SAMPLE_TOPIC "SENSOR_SAMPLE_TOPIC"
-#define PUBSUB_DEMO_TOPIC_ID_SENSOR_SAMPLE_TOPIC static_cast<uint32_t>(LDdsFramework::PubsubDemoTopicId::SENSOR_SAMPLE_TOPIC)
+#define PUBSUB_DEMO_TOPIC_KEY_SENSOR_SAMPLE_TOPIC "pubsub_demo::SENSOR_SAMPLE_TOPIC"
+#define PUBSUB_DEMO_TOPIC_ID_SENSOR_SAMPLE_TOPIC LDdsFramework::LTypeRegistry::makeTopicId(PUBSUB_DEMO_TOPIC_KEY_SENSOR_SAMPLE_TOPIC)
 
-PUBSUB_DEMO_IDL_API void registerPubsubDemoTypes(LTypeRegistry & registry);
-inline bool tryResolvePubsubDemoTopicId(const std::string & topicName, uint32_t & topicId)
+PUBSUB_DEMO_IDL_API bool registerPubsubDemoTypes(LTypeRegistry & registry);
+extern "C" PUBSUB_DEMO_IDL_API bool registerPubsubDemoIdlModule(LTypeRegistry & registry);
+
+inline bool tryResolvePubsubDemoTopicId(const std::string & topicKey, uint32_t & topicId)
 {
-    if (topicName == "SENSOR_SAMPLE_TOPIC")
+    if (topicKey == PUBSUB_DEMO_TOPIC_KEY_SENSOR_SAMPLE_TOPIC ||
+        topicKey == PUBSUB_DEMO_TOPIC_NAME_SENSOR_SAMPLE_TOPIC)
     {
-        topicId = static_cast<uint32_t>(PubsubDemoTopicId::SENSOR_SAMPLE_TOPIC);
+        topicId = PUBSUB_DEMO_TOPIC_ID_SENSOR_SAMPLE_TOPIC;
         return true;
     }
     topicId = 0;
     return false;
 }
 
-inline bool tryResolvePubsubDemoTopicName(uint32_t topicId, const char * & topicName)
+inline bool tryResolvePubsubDemoTopicKey(uint32_t topicId, const char * & topicKey)
 {
-    switch (static_cast<PubsubDemoTopicId>(topicId))
+    if (topicId == PUBSUB_DEMO_TOPIC_ID_SENSOR_SAMPLE_TOPIC)
     {
-    case PubsubDemoTopicId::SENSOR_SAMPLE_TOPIC:
-        topicName = "SENSOR_SAMPLE_TOPIC";
+        topicKey = PUBSUB_DEMO_TOPIC_KEY_SENSOR_SAMPLE_TOPIC;
         return true;
-    default:
-        topicName = nullptr;
-        return false;
     }
+    topicKey = nullptr;
+    return false;
 }
+
 } // namespace LDdsFramework
 
 #endif // PUBSUB_DEMO_TOPIC_H

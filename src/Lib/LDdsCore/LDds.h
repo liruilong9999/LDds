@@ -75,6 +75,9 @@ public:
     LDds(const LDds & other) = delete;
     LDds & operator=(const LDds & other) = delete;
 
+    bool initialize();
+    bool initialize(const TransportConfig & transportConfig);
+
     /**
      * @brief 按 QoS 初始化运行时。
      */
@@ -153,10 +156,42 @@ public:
     }
 
     bool publishTopic(uint32_t topic, const std::vector<uint8_t> & payload);
+    bool publish(const std::string & topicKey, const std::shared_ptr<void> & object);
     /**
      * @brief 通过类型名发布对象（使用类型注册中心序列化）。
      */
     bool publishTopic(const std::string & typeName, const std::shared_ptr<void> & object);
+
+    template<typename T>
+    bool publish(const std::string & topicKey, const T & object)
+    {
+        const uint32_t topic = m_pTypeRegistry->getTopicByTopicKey(topicKey);
+        if (topic == 0)
+        {
+            setLastError("topic not registered for key: " + topicKey);
+            return false;
+        }
+
+        std::vector<uint8_t> payload;
+        if (!m_pTypeRegistry->serializeByTopic(topic, &object, payload))
+        {
+            setLastError("serialize failed for topic=" + std::to_string(topic));
+            return false;
+        }
+
+        return publishSerializedTopic(topic, std::move(payload), m_pTypeRegistry->getTypeNameByTopic(topic));
+    }
+
+    template<typename T>
+    bool publish(const std::string & topicKey, const T * object)
+    {
+        if (object == nullptr)
+        {
+            setLastError("publish object is null");
+            return false;
+        }
+        return publish(topicKey, *object);
+    }
 
     template<typename T>
     bool publishTopic(const std::string & typeName, const T & object)
@@ -193,6 +228,7 @@ public:
     }
 
     void subscribeTopic(uint32_t topic, TopicCallback callback);
+    LFindSet * sub(const std::string & topicKey);
 
     template<typename T>
     void subscribeTopic(uint32_t topic, std::function<void(const T &)> callback)
@@ -291,6 +327,13 @@ private:
         std::string psk;
     };
 
+    struct RuntimeModuleHandle
+    {
+        std::string moduleName;
+        std::string modulePath;
+        void * handle;
+    };
+
     struct RuntimeMetrics
     {
         std::atomic<uint64_t> sentMessages;
@@ -322,6 +365,15 @@ private:
     };
 
     bool createTransportFromQos(const LQos & qos, const TransportConfig & transportConfig);
+    bool applyGeneratedModules();
+    void rememberRegisteredTopics();
+    bool loadConfiguredRuntimeModules();
+    bool loadConfiguredRuntimeModules(const std::string & configPath);
+    bool loadRuntimeModule(const std::string & moduleName, const std::string & modulePath, bool required);
+    void clearRuntimeModules() noexcept;
+    static std::string currentExecutableDirectory();
+    static std::string resolveRuntimePath(const std::string & relativePath);
+    static std::string resolvePathAgainstBase(const std::string & basePath, const std::string & candidatePath);
     bool sendMessageThroughTransport(
         const LMessage & message,
         const LHostAddress * targetAddress = nullptr,
@@ -462,6 +514,12 @@ private:
     mutable std::mutex m_logMutex;
     bool m_structuredLogEnabled;
     LogCallback m_logCallback;
+
+    mutable std::mutex m_findSetMutex;
+    std::unordered_map<uint32_t, LFindSet> m_findSetCache;
+
+    mutable std::mutex m_runtimeModuleMutex;
+    std::vector<RuntimeModuleHandle> m_runtimeModules;
 };
 
 const char * getVersion() noexcept;

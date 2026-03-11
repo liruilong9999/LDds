@@ -1,39 +1,18 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <qos>
-    <!--
-      transport.type: udp | tcp
-      UDP 适合低延迟，TCP 适合顺序与稳定传输。
-    -->
     <transport type="udp" />
-
-    <!--
-      domainId: 通信域编号（0-255）。
-      不同 domain 的节点默认互相隔离。
-    -->
     <domainId>0</domainId>
 
     <!--
-      enableDomainPortMapping/basePort/domainPortOffset:
-      启用后使用端口公式：
-      effectivePort = basePort + domainId * domainPortOffset
+      同一 domain 内默认使用统一端口公式:
+      bindPort = basePort + domainId * domainPortOffset
+      不同机器使用同一端口不会冲突，广播发现会把真实节点地址同步给对端。
     -->
-    <enableDomainPortMapping>false</enableDomainPortMapping>
-    <basePort>20000</basePort>
-    <domainPortOffset>10</domainPortOffset>
+    <enableDomainPortMapping>true</enableDomainPortMapping>
+    <basePort>26000</basePort>
+    <domainPortOffset>20</domainPortOffset>
 
-    <!--
-      historyDepth: 每个 topic 在 Domain 缓存中的历史条数，最小为 1。
-    -->
-    <historyDepth>5</historyDepth>
-
-    <!--
-      deadlineMs: 截止时间（毫秒），<=0 表示关闭 deadline 检测。
-    -->
+    <historyDepth>8</historyDepth>
     <deadlineMs>1000</deadlineMs>
-
-    <!--
-      reliable: true 启用可靠语义预留开关，false 为 best-effort。
-      当前版本该字段为能力预留，建议按业务需求配置。
-    -->
     <reliable>false</reliable>
 </qos>

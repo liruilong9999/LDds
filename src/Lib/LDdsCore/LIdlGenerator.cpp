@@ -5,6 +5,7 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <map>
 #include <set>
 #include <sstream>
@@ -106,6 +107,11 @@ std::string makeMacroToken(const std::string & text)
     return toUpper(sanitizeName(text));
 }
 
+std::string makeRuntimeTopicKey(const std::string & prefix, const std::string & topicName)
+{
+    return sanitizeName(prefix) + "::" + sanitizeName(topicName);
+}
+
 std::string toPascalCase(const std::string & text)
 {
     std::string out;
@@ -159,6 +165,9 @@ std::vector<std::string> splitNs(const std::string & ns)
     }
     return parts;
 }
+
+std::vector<std::string> collectDependencyPrefixes(const LIdlFile & file, const std::string & prefix);
+bool isLocalDefinition(const LIdlFile & file, const std::string & sourceFile);
 
 TypeInfo parseType(
     const std::string & rawType,
@@ -366,13 +375,7 @@ std::string generateDefineHeader(
     const LIdlFile &    file)
 {
     const std::string guard = toUpper(prefix) + "_DEFINE_H";
-    const std::string exportMacro = toUpper(prefix) + "_IDL_API";
-
-    std::unordered_map<std::string, uint32_t> topicByType;
-    for (const auto & topic : file.topics)
-    {
-        topicByType[topic.typeName] = topic.id;
-    }
+    const std::vector<std::string> dependencies = collectDependencyPrefixes(file, prefix);
 
     std::unordered_set<std::string> enumTypeNames;
     for (const auto & en : file.enums)
@@ -391,6 +394,17 @@ std::string generateDefineHeader(
     out << "#include <vector>\n\n";
     out << "#include \"" << prefix << "_export.h\"\n";
     out << "#include \"LByteBuffer.h\"\n\n";
+    out << "#include \"LTypeRegistry.h\"\n\n";
+    for (const auto & dependency : dependencies)
+    {
+        out << "#include \"" << dependency << "_define.h\"\n";
+    }
+    if (!dependencies.empty())
+    {
+        out << "\n";
+    }
+    out << "#ifndef LDDSFRAMEWORK_IDL_DETAIL_HELPERS_H\n";
+    out << "#define LDDSFRAMEWORK_IDL_DETAIL_HELPERS_H\n\n";
     out << "namespace LDdsFramework {\n";
     out << "namespace idl_detail {\n";
     out << "template<typename T>\n";
@@ -441,9 +455,14 @@ std::string generateDefineHeader(
     out << "}\n";
     out << "} // namespace idl_detail\n";
     out << "} // namespace LDdsFramework\n\n";
+    out << "#endif // LDDSFRAMEWORK_IDL_DETAIL_HELPERS_H\n\n";
 
     for (const auto & en : file.enums)
     {
+        if (!isLocalDefinition(file, en.sourceFile))
+        {
+            continue;
+        }
         const auto nsParts = splitNs(en.packagePath);
         openNamespaces(out, nsParts);
         if (!en.comment.empty())
@@ -478,10 +497,19 @@ std::string generateDefineHeader(
         out << "\n";
     }
 
-    const auto order = topologicalStructOrder(file.structs);
+    std::vector<LIdlStruct> localStructs;
+    for (const auto & st : file.structs)
+    {
+        if (isLocalDefinition(file, st.sourceFile))
+        {
+            localStructs.push_back(st);
+        }
+    }
+
+    const auto order = topologicalStructOrder(localStructs);
     for (size_t ordIdx = 0; ordIdx < order.size(); ++ordIdx)
     {
-        const auto & st = file.structs[order[ordIdx]];
+        const auto & st = localStructs[order[ordIdx]];
         const auto nsParts = splitNs(st.packagePath);
         openNamespaces(out, nsParts);
 
@@ -666,10 +694,19 @@ std::string generateDefineHeader(
         out << "        return std::vector<uint8_t>(buffer.data(), buffer.data() + buffer.size());\n";
         out << "    }\n\n";
 
-        const auto topicIt = topicByType.find(st.fullName);
-        const uint32_t topicId = (topicIt == topicByType.end()) ? 0U : topicIt->second;
-        out << "    static uint32_t getTypeId() noexcept { return " << topicId << "U; }\n";
+        const auto topicIt = std::find_if(
+            file.topics.begin(),
+            file.topics.end(),
+            [&st](const LIdlTopic & topic) {
+                return topic.typeName == st.fullName;
+            });
+        const std::string topicKey =
+            (topicIt == file.topics.end()) ? std::string() : makeRuntimeTopicKey(prefix, topicIt->name);
+        out << "    " << st.name << " * get() noexcept { return this; }\n";
+        out << "    const " << st.name << " * get() const noexcept { return this; }\n";
+        out << "    static uint32_t getTypeId() noexcept { return LDdsFramework::LTypeRegistry::makeTopicId(getTopicKey()); }\n";
         out << "    static const char * getTypeName() noexcept { return \"" << st.fullName << "\"; }\n";
+        out << "    static const char * getTopicKey() noexcept { return \"" << topicKey << "\"; }\n";
 
         out << "};\n";
 
@@ -679,6 +716,10 @@ std::string generateDefineHeader(
 
     for (const auto & un : file.unions)
     {
+        if (!isLocalDefinition(file, un.sourceFile))
+        {
+            continue;
+        }
         const auto nsParts = splitNs(un.packagePath);
         openNamespaces(out, nsParts);
         if (!un.comment.empty())
@@ -861,10 +902,19 @@ std::string generateDefineHeader(
         out << "        return std::vector<uint8_t>(buffer.data(), buffer.data() + buffer.size());\n";
         out << "    }\n\n";
 
-        const auto topicIt = topicByType.find(un.fullName);
-        const uint32_t topicId = (topicIt == topicByType.end()) ? 0U : topicIt->second;
-        out << "    static uint32_t getTypeId() noexcept { return " << topicId << "U; }\n";
+        const auto topicIt = std::find_if(
+            file.topics.begin(),
+            file.topics.end(),
+            [&un](const LIdlTopic & topic) {
+                return topic.typeName == un.fullName;
+            });
+        const std::string topicKey =
+            (topicIt == file.topics.end()) ? std::string() : makeRuntimeTopicKey(prefix, topicIt->name);
+        out << "    " << un.name << " * get() noexcept { return this; }\n";
+        out << "    const " << un.name << " * get() const noexcept { return this; }\n";
+        out << "    static uint32_t getTypeId() noexcept { return LDdsFramework::LTypeRegistry::makeTopicId(getTopicKey()); }\n";
         out << "    static const char * getTypeName() noexcept { return \"" << un.fullName << "\"; }\n";
+        out << "    static const char * getTopicKey() noexcept { return \"" << topicKey << "\"; }\n";
         out << "};\n";
 
         closeNamespaces(out, nsParts);
@@ -880,10 +930,18 @@ std::string generateTopicHeader(const std::string & prefix, const LIdlFile & fil
     const std::string guard = toUpper(prefix) + "_TOPIC_H";
     const std::string exportMacro = toUpper(prefix) + "_IDL_API";
     const std::string macroPrefix = makeMacroToken(prefix);
-    const std::string enumName = toPascalCase(prefix) + "TopicId";
     const std::string registerFn = "register" + toPascalCase(prefix) + "Types";
+    const std::string moduleRegisterFn = "register" + toPascalCase(prefix) + "IdlModule";
     const std::string resolveIdFn = "tryResolve" + toPascalCase(prefix) + "TopicId";
-    const std::string resolveNameFn = "tryResolve" + toPascalCase(prefix) + "TopicName";
+    const std::string resolveNameFn = "tryResolve" + toPascalCase(prefix) + "TopicKey";
+    std::vector<LIdlTopic> localTopics;
+    for (const auto & topic : file.topics)
+    {
+        if (isLocalDefinition(file, topic.sourceFile))
+        {
+            localTopics.push_back(topic);
+        }
+    }
 
     std::ostringstream out;
     out << "#ifndef " << guard << "\n";
@@ -895,55 +953,34 @@ std::string generateTopicHeader(const std::string & prefix, const LIdlFile & fil
     out << "#include \"LTypeRegistry.h\"\n\n";
 
     out << "namespace LDdsFramework {\n";
-    out << "enum class " << enumName << " : uint32_t\n";
-    out << "{\n";
-    if (file.topics.empty())
-    {
-        out << "    Invalid = 0\n";
-    }
-    else
-    {
-        out << "    Invalid = 0,\n";
-        for (size_t i = 0; i < file.topics.size(); ++i)
-        {
-            const auto & topic = file.topics[i];
-            out << "    " << topic.name << " = " << topic.id;
-            if (i + 1 < file.topics.size())
-            {
-                out << ",";
-            }
-            if (!topic.comment.empty())
-            {
-                out << " // " << topic.comment;
-            }
-            out << "\n";
-        }
-    }
-    out << "};\n\n";
 
-    for (const auto & topic : file.topics)
+    for (const auto & topic : localTopics)
     {
         const std::string token = makeMacroToken(topic.name);
+        const std::string topicKey = makeRuntimeTopicKey(prefix, topic.name);
         out << "#define " << macroPrefix << "_TOPIC_NAME_" << token
             << " \"" << topic.name << "\"\n";
+        out << "#define " << macroPrefix << "_TOPIC_KEY_" << token
+            << " \"" << topicKey << "\"\n";
         out << "#define " << macroPrefix << "_TOPIC_ID_" << token
-            << " static_cast<uint32_t>(LDdsFramework::" << enumName
-            << "::" << topic.name << ")\n";
+            << " LDdsFramework::LTypeRegistry::makeTopicId(" << macroPrefix << "_TOPIC_KEY_" << token << ")\n";
     }
-    if (!file.topics.empty())
+    if (!localTopics.empty())
     {
         out << "\n";
     }
 
-    out << exportMacro << " void " << registerFn << "(LTypeRegistry & registry);\n";
+    out << exportMacro << " bool " << registerFn << "(LTypeRegistry & registry);\n";
+    out << "extern \"C\" " << exportMacro << " bool " << moduleRegisterFn << "(LTypeRegistry & registry);\n";
     out << "inline bool " << resolveIdFn
-        << "(const std::string & topicName, uint32_t & topicId)\n";
+        << "(const std::string & topicKey, uint32_t & topicId)\n";
     out << "{\n";
-    for (const auto & topic : file.topics)
+    for (const auto & topic : localTopics)
     {
-        out << "    if (topicName == \"" << topic.name << "\")\n";
+        const std::string topicKey = makeRuntimeTopicKey(prefix, topic.name);
+        out << "    if (topicKey == \"" << topicKey << "\" || topicKey == \"" << topic.name << "\")\n";
         out << "    {\n";
-        out << "        topicId = static_cast<uint32_t>(" << enumName << "::" << topic.name << ");\n";
+        out << "        topicId = LTypeRegistry::makeTopicId(\"" << topicKey << "\");\n";
         out << "        return true;\n";
         out << "    }\n";
     }
@@ -952,20 +989,19 @@ std::string generateTopicHeader(const std::string & prefix, const LIdlFile & fil
     out << "}\n\n";
 
     out << "inline bool " << resolveNameFn
-        << "(uint32_t topicId, const char * & topicName)\n";
+        << "(uint32_t topicId, const char * & topicKey)\n";
     out << "{\n";
-    out << "    switch (static_cast<" << enumName << ">(topicId))\n";
-    out << "    {\n";
-    for (const auto & topic : file.topics)
+    for (const auto & topic : localTopics)
     {
-        out << "    case " << enumName << "::" << topic.name << ":\n";
-        out << "        topicName = \"" << topic.name << "\";\n";
+        const std::string topicKey = makeRuntimeTopicKey(prefix, topic.name);
+        out << "    if (topicId == LTypeRegistry::makeTopicId(\"" << topicKey << "\"))\n";
+        out << "    {\n";
+        out << "        topicKey = \"" << topicKey << "\";\n";
         out << "        return true;\n";
+        out << "    }\n";
     }
-    out << "    default:\n";
-    out << "        topicName = nullptr;\n";
-    out << "        return false;\n";
-    out << "    }\n";
+    out << "    topicKey = nullptr;\n";
+    out << "    return false;\n";
     out << "}\n";
     out << "} // namespace LDdsFramework\n\n";
     out << "#endif // " << guard << "\n";
@@ -974,20 +1010,25 @@ std::string generateTopicHeader(const std::string & prefix, const LIdlFile & fil
 
 std::string generateTopicCpp(const std::string & prefix, const LIdlFile & file)
 {
-    const std::string enumName = toPascalCase(prefix) + "TopicId";
     const std::string registerFn = "register" + toPascalCase(prefix) + "Types";
+    const std::string moduleRegisterFn = "register" + toPascalCase(prefix) + "IdlModule";
+    const std::string moduleName = sanitizeName(prefix);
 
     std::unordered_map<std::string, const LIdlTopic *> topicByType;
     for (const auto & topic : file.topics)
     {
-        topicByType[topic.typeName] = &topic;
+        if (isLocalDefinition(file, topic.sourceFile))
+        {
+            topicByType[topic.typeName] = &topic;
+        }
     }
 
     std::ostringstream out;
     out << "#include \"" << prefix << "_topic.h\"\n\n";
     out << "namespace LDdsFramework {\n";
-    out << "void " << registerFn << "(LTypeRegistry & registry)\n";
+    out << "bool " << registerFn << "(LTypeRegistry & registry)\n";
     out << "{\n";
+    out << "    bool ok = true;\n";
 
     for (const auto & st : file.structs)
     {
@@ -998,9 +1039,9 @@ std::string generateTopicCpp(const std::string & prefix, const LIdlFile & file)
         }
 
         const auto * topic = it->second;
-        out << "    registry.registerType<" << st.fullName << ">(\n";
+        out << "    ok = registry.registerTopicType<" << st.fullName << ">(\n";
+        out << "        \"" << makeRuntimeTopicKey(prefix, topic->name) << "\",\n";
         out << "        \"" << st.fullName << "\",\n";
-        out << "        static_cast<uint32_t>(" << enumName << "::" << topic->name << "),\n";
         out << "        [](const " << st.fullName << " & object, std::vector<uint8_t> & outPayload) -> bool {\n";
         out << "            outPayload = object.serialize();\n";
         out << "            return true;\n";
@@ -1008,7 +1049,7 @@ std::string generateTopicCpp(const std::string & prefix, const LIdlFile & file)
         out << "        [](const std::vector<uint8_t> & payload, " << st.fullName << " & object) -> bool {\n";
         out << "            return object.deserialize(payload);\n";
         out << "        }\n";
-        out << "    );\n";
+        out << "    ) && ok;\n";
     }
 
     for (const auto & un : file.unions)
@@ -1020,9 +1061,9 @@ std::string generateTopicCpp(const std::string & prefix, const LIdlFile & file)
         }
 
         const auto * topic = it->second;
-        out << "    registry.registerType<" << un.fullName << ">(\n";
+        out << "    ok = registry.registerTopicType<" << un.fullName << ">(\n";
+        out << "        \"" << makeRuntimeTopicKey(prefix, topic->name) << "\",\n";
         out << "        \"" << un.fullName << "\",\n";
-        out << "        static_cast<uint32_t>(" << enumName << "::" << topic->name << "),\n";
         out << "        [](const " << un.fullName << " & object, std::vector<uint8_t> & outPayload) -> bool {\n";
         out << "            outPayload = object.serialize();\n";
         out << "            return true;\n";
@@ -1030,11 +1071,310 @@ std::string generateTopicCpp(const std::string & prefix, const LIdlFile & file)
         out << "        [](const std::vector<uint8_t> & payload, " << un.fullName << " & object) -> bool {\n";
         out << "            return object.deserialize(payload);\n";
         out << "        }\n";
-        out << "    );\n";
+        out << "    ) && ok;\n";
     }
 
+    out << "    return ok;\n";
+    out << "}\n\n";
+    out << "extern \"C\" " << toUpper(prefix) << "_IDL_API bool " << moduleRegisterFn << "(LTypeRegistry & registry)\n";
+    out << "{\n";
+    out << "    return " << registerFn << "(registry);\n";
     out << "}\n";
     out << "} // namespace LDdsFramework\n";
+    out << "\nnamespace {\n";
+    out << "struct " << toPascalCase(prefix) << "AutoModuleRegistrar\n";
+    out << "{\n";
+    out << "    " << toPascalCase(prefix) << "AutoModuleRegistrar()\n";
+    out << "    {\n";
+    out << "        LDdsFramework::registerGeneratedModule(\n";
+    out << "            \"" << moduleName << "\",\n";
+    out << "            &LDdsFramework::" << moduleRegisterFn << ");\n";
+    out << "    }\n";
+    out << "};\n";
+    out << "static " << toPascalCase(prefix) << "AutoModuleRegistrar g_" << sanitizeName(prefix) << "AutoModuleRegistrar;\n";
+    out << "} // namespace\n";
+    return out.str();
+}
+
+std::vector<std::string> collectDependencyPrefixes(const LIdlFile & file, const std::string & prefix)
+{
+    std::vector<std::string> dependencies;
+    std::unordered_set<std::string> seen;
+    const std::string self = sanitizeName(prefix);
+
+    for (const auto & includeFile : file.includeFiles)
+    {
+        const std::string dependency = sanitizeName(fs::path(includeFile).stem().string());
+        if (dependency.empty() || dependency == self || !seen.insert(dependency).second)
+        {
+            continue;
+        }
+        dependencies.push_back(dependency);
+    }
+
+    return dependencies;
+}
+
+bool isLocalDefinition(const LIdlFile & file, const std::string & sourceFile)
+{
+    if (file.sourcePath.empty() || sourceFile.empty())
+    {
+        return true;
+    }
+
+    std::error_code ec;
+    const fs::path filePath = fs::weakly_canonical(file.sourcePath, ec);
+    const fs::path sourcePath = fs::weakly_canonical(sourceFile, ec);
+    if (!ec)
+    {
+        return filePath == sourcePath;
+    }
+
+    return fs::path(file.sourcePath).lexically_normal() == fs::path(sourceFile).lexically_normal();
+}
+
+uint64_t fnv1a64(const std::string & text)
+{
+    uint64_t hash = 14695981039346656037ULL;
+    for (const unsigned char ch : text)
+    {
+        hash ^= static_cast<uint64_t>(ch);
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+std::string makeGuid(const std::string & seed)
+{
+    const uint64_t hi = fnv1a64(seed);
+    const uint64_t lo = fnv1a64(seed + ":guid");
+    std::ostringstream out;
+    out << std::hex << std::setfill('0')
+        << std::setw(8) << static_cast<uint32_t>((hi >> 32) & 0xFFFFFFFFULL)
+        << "-"
+        << std::setw(4) << static_cast<uint16_t>((hi >> 16) & 0xFFFFULL)
+        << "-"
+        << std::setw(4) << static_cast<uint16_t>(hi & 0xFFFFULL)
+        << "-"
+        << std::setw(4) << static_cast<uint16_t>((lo >> 48) & 0xFFFFULL)
+        << "-"
+        << std::setw(12) << (lo & 0xFFFFFFFFFFFFULL);
+    return out.str();
+}
+
+std::string joinVcxprojList(const std::vector<std::string> & values, const std::string & suffix = std::string())
+{
+    std::ostringstream out;
+    for (size_t i = 0; i < values.size(); ++i)
+    {
+        if (i > 0)
+        {
+            out << ";";
+        }
+        out << values[i] << suffix;
+    }
+    return out.str();
+}
+
+std::string generateModuleCMakeLists(const std::string & prefix, const LIdlFile & file)
+{
+    const std::vector<std::string> dependencies = collectDependencyPrefixes(file, prefix);
+    const std::string targetName = sanitizeName(prefix);
+    const std::string exportMacro = toUpper(prefix) + "_IDL_EXPORTS";
+
+    std::ostringstream out;
+    out << "cmake_minimum_required(VERSION 3.16)\n";
+    out << "project(" << targetName << " LANGUAGES CXX)\n\n";
+    out << "set(CMAKE_CXX_STANDARD 17)\n";
+    out << "set(CMAKE_CXX_STANDARD_REQUIRED ON)\n";
+    out << "set(CMAKE_DEBUG_POSTFIX d)\n\n";
+    out << "if(NOT DEFINED LDDS_ROOT)\n";
+    out << "    if(DEFINED ENV{LDDS_ROOT})\n";
+    out << "        set(LDDS_ROOT \"$ENV{LDDS_ROOT}\")\n";
+    out << "    endif()\n";
+    out << "endif()\n";
+    out << "if(NOT LDDS_ROOT)\n";
+    out << "    message(FATAL_ERROR \"Set LDDS_ROOT to the LDds root directory before building this module\")\n";
+    out << "endif()\n\n";
+    out << "add_library(" << targetName << " SHARED\n";
+    out << "    " << prefix << "_topic.cpp\n";
+    out << ")\n\n";
+    out << "target_compile_definitions(" << targetName << " PRIVATE " << exportMacro << ")\n";
+    out << "target_include_directories(" << targetName << " PUBLIC\n";
+    out << "    \"${CMAKE_CURRENT_SOURCE_DIR}\"\n";
+    out << "    \"${CMAKE_CURRENT_SOURCE_DIR}/lib/include\"\n";
+    out << "    \"${LDDS_ROOT}/src/Lib/LDdsCore\"\n";
+    for (const auto & dependency : dependencies)
+    {
+        out << "    \"${CMAKE_CURRENT_SOURCE_DIR}/../" << dependency << "/lib/include\"\n";
+    }
+    out << ")\n";
+    out << "target_link_directories(" << targetName << " PRIVATE\n";
+    out << "    \"${LDDS_ROOT}/bin/lib\"\n";
+    for (const auto & dependency : dependencies)
+    {
+        out << "    \"${CMAKE_CURRENT_SOURCE_DIR}/../" << dependency << "/lib/lib\"\n";
+    }
+    out << ")\n";
+    out << "target_link_libraries(" << targetName << " PRIVATE LDdsCore$<$<CONFIG:Debug>:d>";
+    for (const auto & dependency : dependencies)
+    {
+        out << " " << dependency << "$<$<CONFIG:Debug>:d>";
+    }
+    out << ")\n\n";
+    out << "set_target_properties(" << targetName << " PROPERTIES\n";
+    out << "    ARCHIVE_OUTPUT_DIRECTORY \"${CMAKE_CURRENT_SOURCE_DIR}/lib/lib\"\n";
+    out << "    LIBRARY_OUTPUT_DIRECTORY \"${CMAKE_CURRENT_SOURCE_DIR}/lib/dll\"\n";
+    out << "    RUNTIME_OUTPUT_DIRECTORY \"${CMAKE_CURRENT_SOURCE_DIR}/lib/dll\"\n";
+    out << ")\n";
+    out << "foreach(cfg Debug Release RelWithDebInfo MinSizeRel)\n";
+    out << "    string(TOUPPER ${cfg} CFG)\n";
+    out << "    set_target_properties(" << targetName << " PROPERTIES\n";
+    out << "        ARCHIVE_OUTPUT_DIRECTORY_${CFG} \"${CMAKE_CURRENT_SOURCE_DIR}/lib/lib\"\n";
+    out << "        LIBRARY_OUTPUT_DIRECTORY_${CFG} \"${CMAKE_CURRENT_SOURCE_DIR}/lib/dll\"\n";
+    out << "        RUNTIME_OUTPUT_DIRECTORY_${CFG} \"${CMAKE_CURRENT_SOURCE_DIR}/lib/dll\"\n";
+    out << "    )\n";
+    out << "endforeach()\n";
+    return out.str();
+}
+
+std::string generateModuleVcxproj(const std::string & prefix, const LIdlFile & file)
+{
+    const std::vector<std::string> dependencies = collectDependencyPrefixes(file, prefix);
+    const std::string projectGuid = makeGuid(prefix);
+    const std::string projectName = sanitizeName(prefix);
+    const std::string exportMacro = toUpper(prefix) + "_IDL_EXPORTS";
+
+    std::vector<std::string> includeDirs = {
+        "$(ProjectDir)",
+        "$(ProjectDir)lib\\include",
+        "$(LDDS_ROOT)\\src\\Lib\\LDdsCore"
+    };
+    std::vector<std::string> libraryDirs = {
+        "$(LDDS_ROOT)\\bin\\lib"
+    };
+    std::vector<std::string> debugDependencies = {
+        "LDdsCored.lib"
+    };
+    std::vector<std::string> releaseDependencies = {
+        "LDdsCore.lib"
+    };
+
+    for (const auto & dependency : dependencies)
+    {
+        includeDirs.push_back("$(ProjectDir)..\\" + dependency + "\\lib\\include");
+        libraryDirs.push_back("$(ProjectDir)..\\" + dependency + "\\lib\\lib");
+        debugDependencies.push_back(dependency + "d.lib");
+        releaseDependencies.push_back(dependency + ".lib");
+    }
+
+    std::ostringstream out;
+    out << "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n";
+    out << "<Project DefaultTargets=\"Build\" xmlns=\"http://schemas.microsoft.com/developer/msbuild/2003\">\n";
+    out << "  <ItemGroup Label=\"ProjectConfigurations\">\n";
+    out << "    <ProjectConfiguration Include=\"Debug|x64\"><Configuration>Debug</Configuration><Platform>x64</Platform></ProjectConfiguration>\n";
+    out << "    <ProjectConfiguration Include=\"Release|x64\"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>\n";
+    out << "  </ItemGroup>\n";
+    out << "  <PropertyGroup Label=\"Globals\">\n";
+    out << "    <VCProjectVersion>15.0</VCProjectVersion>\n";
+    out << "    <ProjectGuid>{" << projectGuid << "}</ProjectGuid>\n";
+    out << "    <Keyword>Win32Proj</Keyword>\n";
+    out << "    <RootNamespace>" << projectName << "</RootNamespace>\n";
+    out << "    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>\n";
+    out << "  </PropertyGroup>\n";
+    out << "  <Import Project=\"$(VCTargetsPath)\\Microsoft.Cpp.Default.props\" />\n";
+    out << "  <PropertyGroup Condition=\"'$(Configuration)|$(Platform)'=='Debug|x64'\" Label=\"Configuration\">\n";
+    out << "    <ConfigurationType>DynamicLibrary</ConfigurationType>\n";
+    out << "    <UseDebugLibraries>true</UseDebugLibraries>\n";
+    out << "    <PlatformToolset>v141</PlatformToolset>\n";
+    out << "  </PropertyGroup>\n";
+    out << "  <PropertyGroup Condition=\"'$(Configuration)|$(Platform)'=='Release|x64'\" Label=\"Configuration\">\n";
+    out << "    <ConfigurationType>DynamicLibrary</ConfigurationType>\n";
+    out << "    <UseDebugLibraries>false</UseDebugLibraries>\n";
+    out << "    <PlatformToolset>v141</PlatformToolset>\n";
+    out << "  </PropertyGroup>\n";
+    out << "  <Import Project=\"$(VCTargetsPath)\\Microsoft.Cpp.props\" />\n";
+    out << "  <PropertyGroup Condition=\"'$(Configuration)|$(Platform)'=='Debug|x64'\">\n";
+    out << "    <OutDir>$(ProjectDir)lib\\dll\\</OutDir>\n";
+    out << "    <IntDir>$(ProjectDir)build\\Debug\\</IntDir>\n";
+    out << "    <TargetName>" << projectName << "d</TargetName>\n";
+    out << "  </PropertyGroup>\n";
+    out << "  <PropertyGroup Condition=\"'$(Configuration)|$(Platform)'=='Release|x64'\">\n";
+    out << "    <OutDir>$(ProjectDir)lib\\dll\\</OutDir>\n";
+    out << "    <IntDir>$(ProjectDir)build\\Release\\</IntDir>\n";
+    out << "    <TargetName>" << projectName << "</TargetName>\n";
+    out << "  </PropertyGroup>\n";
+    out << "  <ItemDefinitionGroup Condition=\"'$(Configuration)|$(Platform)'=='Debug|x64'\">\n";
+    out << "    <ClCompile>\n";
+    out << "      <LanguageStandard>stdcpp17</LanguageStandard>\n";
+    out << "      <WarningLevel>Level3</WarningLevel>\n";
+    out << "      <AdditionalIncludeDirectories>" << joinVcxprojList(includeDirs) << ";%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>\n";
+    out << "      <PreprocessorDefinitions>_DEBUG;_WINDOWS;_USRDLL;" << exportMacro << ";%(PreprocessorDefinitions)</PreprocessorDefinitions>\n";
+    out << "    </ClCompile>\n";
+    out << "    <Link>\n";
+    out << "      <AdditionalLibraryDirectories>" << joinVcxprojList(libraryDirs) << ";%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>\n";
+    out << "      <AdditionalDependencies>" << joinVcxprojList(debugDependencies) << ";%(AdditionalDependencies)</AdditionalDependencies>\n";
+    out << "      <ImportLibrary>$(ProjectDir)lib\\lib\\$(TargetName).lib</ImportLibrary>\n";
+    out << "    </Link>\n";
+    out << "  </ItemDefinitionGroup>\n";
+    out << "  <ItemDefinitionGroup Condition=\"'$(Configuration)|$(Platform)'=='Release|x64'\">\n";
+    out << "    <ClCompile>\n";
+    out << "      <LanguageStandard>stdcpp17</LanguageStandard>\n";
+    out << "      <WarningLevel>Level3</WarningLevel>\n";
+    out << "      <AdditionalIncludeDirectories>" << joinVcxprojList(includeDirs) << ";%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>\n";
+    out << "      <PreprocessorDefinitions>NDEBUG;_WINDOWS;_USRDLL;" << exportMacro << ";%(PreprocessorDefinitions)</PreprocessorDefinitions>\n";
+    out << "    </ClCompile>\n";
+    out << "    <Link>\n";
+    out << "      <AdditionalLibraryDirectories>" << joinVcxprojList(libraryDirs) << ";%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>\n";
+    out << "      <AdditionalDependencies>" << joinVcxprojList(releaseDependencies) << ";%(AdditionalDependencies)</AdditionalDependencies>\n";
+    out << "      <ImportLibrary>$(ProjectDir)lib\\lib\\$(TargetName).lib</ImportLibrary>\n";
+    out << "    </Link>\n";
+    out << "  </ItemDefinitionGroup>\n";
+    out << "  <ItemGroup>\n";
+    out << "    <ClCompile Include=\"" << prefix << "_topic.cpp\" />\n";
+    out << "  </ItemGroup>\n";
+    out << "  <ItemGroup>\n";
+    out << "    <ClInclude Include=\"" << prefix << "_define.h\" />\n";
+    out << "    <ClInclude Include=\"" << prefix << "_export.h\" />\n";
+    out << "    <ClInclude Include=\"" << prefix << "_topic.h\" />\n";
+    out << "  </ItemGroup>\n";
+    out << "  <Import Project=\"$(VCTargetsPath)\\Microsoft.Cpp.targets\" />\n";
+    out << "</Project>\n";
+    return out.str();
+}
+
+std::string generateModuleSln(const std::string & prefix)
+{
+    const std::string projectGuid = makeGuid(prefix);
+    const std::string solutionGuid = makeGuid(prefix + ".sln");
+    const std::string projectName = sanitizeName(prefix);
+
+    std::ostringstream out;
+    out << "Microsoft Visual Studio Solution File, Format Version 12.00\n";
+    out << "# Visual Studio 15\n";
+    out << "VisualStudioVersion = 15.0.28307.1682\n";
+    out << "MinimumVisualStudioVersion = 10.0.40219.1\n";
+    out << "Project(\"{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}\") = \"" << projectName
+        << "\", \"" << projectName << ".vcxproj\", \"{" << projectGuid << "}\"\n";
+    out << "EndProject\n";
+    out << "Global\n";
+    out << "\tGlobalSection(SolutionConfigurationPlatforms) = preSolution\n";
+    out << "\t\tDebug|x64 = Debug|x64\n";
+    out << "\t\tRelease|x64 = Release|x64\n";
+    out << "\tEndGlobalSection\n";
+    out << "\tGlobalSection(ProjectConfigurationPlatforms) = postSolution\n";
+    out << "\t\t{" << projectGuid << "}.Debug|x64.ActiveCfg = Debug|x64\n";
+    out << "\t\t{" << projectGuid << "}.Debug|x64.Build.0 = Debug|x64\n";
+    out << "\t\t{" << projectGuid << "}.Release|x64.ActiveCfg = Release|x64\n";
+    out << "\t\t{" << projectGuid << "}.Release|x64.Build.0 = Release|x64\n";
+    out << "\tEndGlobalSection\n";
+    out << "\tGlobalSection(SolutionProperties) = preSolution\n";
+    out << "\t\tHideSolutionNode = FALSE\n";
+    out << "\tEndGlobalSection\n";
+    out << "\tGlobalSection(ExtensibilityGlobals) = postSolution\n";
+    out << "\t\tSolutionGuid = {" << solutionGuid << "}\n";
+    out << "\tEndGlobalSection\n";
+    out << "EndGlobal\n";
     return out.str();
 }
 
@@ -1428,16 +1768,41 @@ GenerationResult LIdlGenerator::generateFromAst(
         const std::string defineText = generateDefineHeader(prefix, *idlFile);
         const std::string topicHText = generateTopicHeader(prefix, *idlFile);
         const std::string topicCppText = generateTopicCpp(prefix, *idlFile);
+        const std::string cmakeText = generateModuleCMakeLists(prefix, *idlFile);
+        const std::string vcxprojText = generateModuleVcxproj(prefix, *idlFile);
+        const std::string slnText = generateModuleSln(prefix);
 
         const fs::path exportPath = outputDir / (prefix + "_export.h");
         const fs::path definePath = outputDir / (prefix + "_define.h");
         const fs::path topicHPath = outputDir / (prefix + "_topic.h");
         const fs::path topicCppPath = outputDir / (prefix + "_topic.cpp");
+        const fs::path cmakePath = outputDir / "CMakeLists.txt";
+        const fs::path vcxprojPath = outputDir / (prefix + ".vcxproj");
+        const fs::path slnPath = outputDir / (prefix + ".sln");
+        const fs::path packageLibDir = outputDir / "lib";
+        const fs::path includeDir = packageLibDir / "include";
+        const fs::path archiveDir = packageLibDir / "lib";
+        const fs::path dllDir = packageLibDir / "dll";
+
+        fs::create_directories(includeDir, ec);
+        fs::create_directories(archiveDir, ec);
+        fs::create_directories(dllDir, ec);
+        if (ec)
+        {
+            result.messages.push_back("failed to create generated lib directories");
+            return result;
+        }
 
         if (!writeTextFile(exportPath, exportText) ||
             !writeTextFile(definePath, defineText) ||
             !writeTextFile(topicHPath, topicHText) ||
-            !writeTextFile(topicCppPath, topicCppText))
+            !writeTextFile(topicCppPath, topicCppText) ||
+            !writeTextFile(cmakePath, cmakeText) ||
+            !writeTextFile(vcxprojPath, vcxprojText) ||
+            !writeTextFile(slnPath, slnText) ||
+            !writeTextFile(includeDir / (prefix + "_export.h"), exportText) ||
+            !writeTextFile(includeDir / (prefix + "_define.h"), defineText) ||
+            !writeTextFile(includeDir / (prefix + "_topic.h"), topicHText))
         {
             result.messages.push_back("failed to write generated files");
             return result;
@@ -1447,14 +1812,18 @@ GenerationResult LIdlGenerator::generateFromAst(
         result.outputPath = outputDir.string();
         result.generatedCode = defineText;
         result.linesGenerated = countLines(exportText) + countLines(defineText) +
-                                countLines(topicHText) + countLines(topicCppText);
+                                countLines(topicHText) + countLines(topicCppText) +
+                                countLines(cmakeText) + countLines(vcxprojText) + countLines(slnText);
 
         if (m_callback)
         {
-            m_callback((outputDir / (prefix + "_define.h")).string(), 1, 4, "generated");
-            m_callback((outputDir / (prefix + "_export.h")).string(), 2, 4, "generated");
-            m_callback((outputDir / (prefix + "_topic.h")).string(), 3, 4, "generated");
-            m_callback((outputDir / (prefix + "_topic.cpp")).string(), 4, 4, "generated");
+            m_callback((outputDir / (prefix + "_define.h")).string(), 1, 7, "generated");
+            m_callback((outputDir / (prefix + "_export.h")).string(), 2, 7, "generated");
+            m_callback((outputDir / (prefix + "_topic.h")).string(), 3, 7, "generated");
+            m_callback((outputDir / (prefix + "_topic.cpp")).string(), 4, 7, "generated");
+            m_callback(cmakePath.string(), 5, 7, "generated");
+            m_callback(vcxprojPath.string(), 6, 7, "generated");
+            m_callback(slnPath.string(), 7, 7, "generated");
         }
     }
     else if (m_target == TargetLanguage::Python)
@@ -1507,7 +1876,7 @@ std::vector<std::string> LIdlGenerator::getFileExtensions() const
     switch (m_target)
     {
     case TargetLanguage::Cpp:
-        return {"_define.h", "_export.h", "_topic.h", "_topic.cpp"};
+        return {"_define.h", "_export.h", "_topic.h", "_topic.cpp", "CMakeLists.txt", ".vcxproj", ".sln", "lib/include", "lib/lib", "lib/dll"};
     case TargetLanguage::CSharp:
         return {".cs"};
     case TargetLanguage::Java:

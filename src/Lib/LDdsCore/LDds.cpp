@@ -1,8 +1,10 @@
 #include "LDds.h"
 #include "LTcpTransport.h"
 #include "LUdpTransport.h"
+#include "pugixml.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <chrono>
 #include <cstring>
@@ -13,6 +15,15 @@
 #include <sstream>
 #include <string>
 #include <utility>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 
 namespace LDdsFramework {
 namespace {
@@ -39,6 +50,8 @@ constexpr uint8_t SECURITY_ENVELOPE_VERSION = 1U;
 constexpr uint8_t SECURITY_FLAG_ENCRYPTED = 0x01U;
 constexpr size_t SECURITY_ENVELOPE_PREFIX_SIZE =
     sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint8_t) + sizeof(uint64_t) + sizeof(uint64_t);
+constexpr const char * DEFAULT_QOS_RELATIVE_PATH = "config/qos.xml";
+constexpr const char * DEFAULT_RELY_RELATIVE_PATH = "config/ddsRely.xml";
 
 int64_t getFileWriteTick(const std::string & filePath)
 {
@@ -59,6 +72,138 @@ int64_t getFileWriteTick(const std::string & filePath)
         return -1;
     }
     return static_cast<int64_t>(writeTime.time_since_epoch().count());
+}
+
+std::string trim(std::string value)
+{
+    const auto begin = value.find_first_not_of(" \t\r\n");
+    if (begin == std::string::npos)
+    {
+        return std::string();
+    }
+
+    const auto end = value.find_last_not_of(" \t\r\n");
+    return value.substr(begin, end - begin + 1);
+}
+
+std::string toLower(std::string value)
+{
+    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+    });
+    return value;
+}
+
+bool parseBoolText(const std::string & text, bool defaultValue = false)
+{
+    const std::string lower = toLower(trim(text));
+    if (lower == "1" || lower == "true" || lower == "yes" || lower == "on")
+    {
+        return true;
+    }
+    if (lower == "0" || lower == "false" || lower == "no" || lower == "off")
+    {
+        return false;
+    }
+    return defaultValue;
+}
+
+std::string currentExecutableDirectoryImpl()
+{
+#if defined(_WIN32)
+    std::vector<char> buffer(static_cast<size_t>(MAX_PATH), '\0');
+    DWORD length = ::GetModuleFileNameA(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    while (length >= buffer.size())
+    {
+        buffer.resize(buffer.size() * 2U, '\0');
+        length = ::GetModuleFileNameA(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    }
+    if (length == 0)
+    {
+        return std::filesystem::current_path().string();
+    }
+    return std::filesystem::path(std::string(buffer.data(), length)).parent_path().string();
+#else
+    return std::filesystem::current_path().string();
+#endif
+}
+
+std::string resolveExistingPath(const std::vector<std::filesystem::path> & candidates)
+{
+    for (const auto & candidate : candidates)
+    {
+        if (candidate.empty())
+        {
+            continue;
+        }
+
+        std::error_code ec;
+        if (!std::filesystem::exists(candidate, ec) || ec)
+        {
+            continue;
+        }
+
+        const std::filesystem::path normalized = std::filesystem::weakly_canonical(candidate, ec);
+        if (!ec)
+        {
+            return normalized.string();
+        }
+        return candidate.lexically_normal().string();
+    }
+
+    return std::string();
+}
+
+void * loadSharedModuleHandle(const std::string & modulePath)
+{
+#if defined(_WIN32)
+    return reinterpret_cast<void *>(::LoadLibraryA(modulePath.c_str()));
+#else
+    return ::dlopen(modulePath.c_str(), RTLD_NOW | RTLD_GLOBAL);
+#endif
+}
+
+void unloadSharedModuleHandle(void * handle) noexcept
+{
+    if (handle == nullptr)
+    {
+        return;
+    }
+#if defined(_WIN32)
+    ::FreeLibrary(reinterpret_cast<HMODULE>(handle));
+#else
+    ::dlclose(handle);
+#endif
+}
+
+std::string getSharedModuleErrorText()
+{
+#if defined(_WIN32)
+    const DWORD errorCode = ::GetLastError();
+    if (errorCode == 0U)
+    {
+        return std::string();
+    }
+
+    LPSTR messageBuffer = nullptr;
+    const DWORD size = ::FormatMessageA(
+        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+        nullptr,
+        errorCode,
+        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+        reinterpret_cast<LPSTR>(&messageBuffer),
+        0,
+        nullptr);
+    std::string text = (size > 0U && messageBuffer != nullptr) ? std::string(messageBuffer, size) : std::to_string(errorCode);
+    if (messageBuffer != nullptr)
+    {
+        ::LocalFree(messageBuffer);
+    }
+    return text;
+#else
+    const char * errorText = ::dlerror();
+    return errorText == nullptr ? std::string() : std::string(errorText);
+#endif
 }
 
 void appendU8(std::vector<uint8_t> & out, uint8_t value)
@@ -410,12 +555,47 @@ LDds::LDds()
     , m_logMutex()
     , m_structuredLogEnabled(false)
     , m_logCallback()
+    , m_findSetMutex()
+    , m_findSetCache()
+    , m_runtimeModuleMutex()
+    , m_runtimeModules()
 {
 }
 
 LDds::~LDds()
 {
     shutdown();
+}
+
+bool LDds::initialize()
+{
+    TransportConfig config;
+    return initialize(config);
+}
+
+bool LDds::initialize(const TransportConfig & transportConfig)
+{
+    const std::string qosPath = resolveRuntimePath(DEFAULT_QOS_RELATIVE_PATH);
+
+    LQos qos;
+    std::string loadError;
+    std::error_code ec;
+    if (!qosPath.empty() && std::filesystem::exists(qosPath, ec) && !ec)
+    {
+        if (qos.loadFromXmlFile(qosPath, &loadError))
+        {
+            if (!initialize(qos, transportConfig, INVALID_DOMAIN_ID))
+            {
+                return false;
+            }
+            initializeQosHotReload(qosPath);
+            return true;
+        }
+
+        setLastError("failed to load qos xml, fallback to defaults: " + loadError);
+    }
+
+    return initialize(qos, transportConfig, INVALID_DOMAIN_ID);
 }
 
 bool LDds::initialize(const LQos & qos)
@@ -430,6 +610,16 @@ bool LDds::initialize(const LQos & qos, const TransportConfig & transportConfig,
     {
         return true;
     }
+
+    if (!loadConfiguredRuntimeModules())
+    {
+        return false;
+    }
+    if (!applyGeneratedModules())
+    {
+        return false;
+    }
+    rememberRegisteredTopics();
 
     LQos effectiveQos = qos;
     const DomainId effectiveDomainId = resolveEffectiveDomainId(qos, domainId);
@@ -534,6 +724,7 @@ bool LDds::initialize(const LQos & qos, const TransportConfig & transportConfig,
         if (effectiveTransportConfig.enableDiscovery)
         {
             effectiveTransportConfig.enableBroadcast = true;
+            effectiveTransportConfig.enableMulticast = true;
         }
         if (effectiveTransportConfig.enableDiscovery &&
             effectiveTransportConfig.enableMulticast &&
@@ -671,6 +862,11 @@ void LDds::shutdown() noexcept
     }
 
     {
+        std::lock_guard<std::mutex> lock(m_findSetMutex);
+        m_findSetCache.clear();
+    }
+
+    {
         std::lock_guard<std::mutex> lock(m_ownershipMutex);
         m_topicOwnership.clear();
     }
@@ -684,6 +880,7 @@ void LDds::shutdown() noexcept
         m_securityConfig = SecurityRuntimeConfig{false, false, std::string()};
     }
 
+    clearRuntimeModules();
     m_domain.destroy();
     m_effectiveDomainId = DEFAULT_DOMAIN_ID;
     m_sequence.store(0);
@@ -700,6 +897,8 @@ void LDds::setTypeRegistry(std::shared_ptr<LTypeRegistry> typeRegistry)
     if (typeRegistry)
     {
         m_pTypeRegistry = std::move(typeRegistry);
+        (void)applyGeneratedModules();
+        rememberRegisteredTopics();
     }
 }
 
@@ -734,6 +933,31 @@ bool LDds::publishTopic(uint32_t topic, const std::vector<uint8_t> & payload)
 {
     const std::string typeName = m_pTypeRegistry->getTypeNameByTopic(topic);
     return publishSerializedTopic(topic, std::vector<uint8_t>(payload), typeName);
+}
+
+bool LDds::publish(const std::string & topicKey, const std::shared_ptr<void> & object)
+{
+    if (!object)
+    {
+        setLastError("publish object is null");
+        return false;
+    }
+
+    const uint32_t topic = m_pTypeRegistry->getTopicByTopicKey(topicKey);
+    if (topic == 0)
+    {
+        setLastError("topic not registered for key: " + topicKey);
+        return false;
+    }
+
+    std::vector<uint8_t> payload;
+    if (!m_pTypeRegistry->serializeByTopic(topic, object.get(), payload))
+    {
+        setLastError("serialize failed for topic=" + std::to_string(topic));
+        return false;
+    }
+
+    return publishSerializedTopic(topic, std::move(payload), m_pTypeRegistry->getTypeNameByTopic(topic));
 }
 
 bool LDds::publishTopic(const std::string & typeName, const std::shared_ptr<void> & object)
@@ -771,6 +995,26 @@ void LDds::subscribeTopic(uint32_t topic, TopicCallback callback)
     std::lock_guard<std::mutex> lock(m_subscribersMutex);
     m_subscribers[topic].push_back(std::move(callback));
     rememberKnownTopic(topic);
+}
+
+LFindSet * LDds::sub(const std::string & topicKey)
+{
+    const uint32_t topic = m_pTypeRegistry->getTopicByTopicKey(topicKey);
+    if (topic == 0)
+    {
+        setLastError("topic not registered for key: " + topicKey);
+        return nullptr;
+    }
+
+    rememberKnownTopic(topic);
+
+    LFindSet findSet = m_domain.getFindSetByTopic(static_cast<int>(topic));
+    findSet.bindTypeRegistry(m_pTypeRegistry.get(), topic);
+
+    std::lock_guard<std::mutex> lock(m_findSetMutex);
+    auto & cache = m_findSetCache[topic];
+    cache = std::move(findSet);
+    return &cache;
 }
 
 void LDds::unsubscribeTopic(uint32_t topic)
@@ -872,6 +1116,259 @@ std::string LDds::getLastError() const
 {
     std::lock_guard<std::mutex> lock(m_errorMutex);
     return m_lastError;
+}
+
+bool LDds::applyGeneratedModules()
+{
+    if (!m_pTypeRegistry)
+    {
+        setLastError("type registry is null");
+        return false;
+    }
+
+    std::vector<std::string> appliedModules;
+    if (!m_pTypeRegistry->applyGeneratedModules(&appliedModules))
+    {
+        setLastError("failed to apply generated modules");
+        return false;
+    }
+
+    if (!appliedModules.empty())
+    {
+        rememberRegisteredTopics();
+    }
+    return true;
+}
+
+void LDds::rememberRegisteredTopics()
+{
+    if (!m_pTypeRegistry)
+    {
+        return;
+    }
+
+    const std::vector<uint32_t> topics = m_pTypeRegistry->getRegisteredTopics();
+    for (uint32_t topic : topics)
+    {
+        rememberKnownTopic(topic);
+    }
+}
+
+bool LDds::loadConfiguredRuntimeModules()
+{
+    const std::string configPath = resolveRuntimePath(DEFAULT_RELY_RELATIVE_PATH);
+    std::error_code ec;
+    if (configPath.empty() || !std::filesystem::exists(configPath, ec) || ec)
+    {
+        return true;
+    }
+    return loadConfiguredRuntimeModules(configPath);
+}
+
+bool LDds::loadConfiguredRuntimeModules(const std::string & configPath)
+{
+    pugi::xml_document document;
+    const pugi::xml_parse_result result = document.load_file(configPath.c_str());
+    if (!result)
+    {
+        setLastError("failed to parse ddsRely xml: " + std::string(result.description()));
+        return false;
+    }
+
+    const pugi::xml_node root =
+        document.child("ddsRely")
+            ? document.child("ddsRely")
+            : (document.child("DDSRely")
+                   ? document.child("DDSRely")
+                   : document.document_element());
+    if (!root)
+    {
+        setLastError("ddsRely xml is empty");
+        return false;
+    }
+
+    for (const pugi::xml_node libraryNode : root.children())
+    {
+        const std::string nodeName = toLower(trim(libraryNode.name()));
+        if (nodeName != "library" && nodeName != "module" && nodeName != "dll")
+        {
+            continue;
+        }
+
+        std::string moduleName = trim(libraryNode.attribute("name").as_string());
+        std::string modulePath = trim(libraryNode.attribute("path").as_string());
+        bool required = parseBoolText(libraryNode.attribute("required").as_string(), false);
+        if (libraryNode.attribute("optional"))
+        {
+            required = !parseBoolText(libraryNode.attribute("optional").as_string(), false);
+        }
+
+        if (modulePath.empty())
+        {
+            if (const pugi::xml_node pathNode = libraryNode.child("path"))
+            {
+                modulePath = trim(pathNode.text().as_string());
+            }
+        }
+        if (moduleName.empty() && !modulePath.empty())
+        {
+            moduleName = std::filesystem::path(modulePath).stem().string();
+        }
+        if (moduleName.empty())
+        {
+            moduleName = trim(libraryNode.text().as_string());
+        }
+        if (modulePath.empty())
+        {
+            modulePath = moduleName;
+        }
+
+        const std::string resolvedModulePath = resolvePathAgainstBase(configPath, modulePath);
+        if (!loadRuntimeModule(moduleName, resolvedModulePath, required))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool LDds::loadRuntimeModule(
+    const std::string & moduleName,
+    const std::string & modulePath,
+    bool                required)
+{
+    if (modulePath.empty())
+    {
+        if (!required)
+        {
+            return true;
+        }
+        setLastError("runtime module path is empty: " + moduleName);
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_runtimeModuleMutex);
+        for (const RuntimeModuleHandle & loadedModule : m_runtimeModules)
+        {
+            if (loadedModule.modulePath == modulePath ||
+                (!moduleName.empty() && loadedModule.moduleName == moduleName))
+            {
+                return true;
+            }
+        }
+    }
+
+    std::error_code ec;
+    if (!std::filesystem::exists(modulePath, ec) || ec)
+    {
+        if (!required)
+        {
+            return true;
+        }
+        setLastError("runtime module not found: " + modulePath);
+        return false;
+    }
+
+    void * handle = loadSharedModuleHandle(modulePath);
+    if (handle == nullptr)
+    {
+        if (!required)
+        {
+            return true;
+        }
+        setLastError("failed to load runtime module: " + modulePath + ", error=" + getSharedModuleErrorText());
+        return false;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(m_runtimeModuleMutex);
+        m_runtimeModules.push_back(RuntimeModuleHandle{moduleName, modulePath, handle});
+    }
+
+    if (!applyGeneratedModules())
+    {
+        {
+            std::lock_guard<std::mutex> lock(m_runtimeModuleMutex);
+            m_runtimeModules.erase(
+                std::remove_if(
+                    m_runtimeModules.begin(),
+                    m_runtimeModules.end(),
+                    [&modulePath](const RuntimeModuleHandle & loadedModule) {
+                        return loadedModule.modulePath == modulePath;
+                    }),
+                m_runtimeModules.end());
+        }
+        unloadSharedModuleHandle(handle);
+        return false;
+    }
+
+    rememberRegisteredTopics();
+    return true;
+}
+
+void LDds::clearRuntimeModules() noexcept
+{
+    std::vector<RuntimeModuleHandle> modules;
+    {
+        std::lock_guard<std::mutex> lock(m_runtimeModuleMutex);
+        modules.swap(m_runtimeModules);
+    }
+
+    for (auto it = modules.rbegin(); it != modules.rend(); ++it)
+    {
+        unloadSharedModuleHandle(it->handle);
+    }
+}
+
+std::string LDds::currentExecutableDirectory()
+{
+    return currentExecutableDirectoryImpl();
+}
+
+std::string LDds::resolveRuntimePath(const std::string & relativePath)
+{
+    return resolvePathAgainstBase(currentExecutableDirectory(), relativePath);
+}
+
+std::string LDds::resolvePathAgainstBase(
+    const std::string & basePath,
+    const std::string & candidatePath)
+{
+    if (candidatePath.empty())
+    {
+        return std::string();
+    }
+
+    const std::filesystem::path candidate(candidatePath);
+    if (candidate.is_absolute())
+    {
+        return candidate.lexically_normal().string();
+    }
+
+    std::vector<std::filesystem::path> candidates;
+    if (!basePath.empty())
+    {
+        std::filesystem::path base(basePath);
+        if (base.has_extension())
+        {
+            base = base.parent_path();
+        }
+        candidates.push_back(base / candidate);
+    }
+
+    candidates.push_back(std::filesystem::current_path() / candidate);
+    candidates.push_back(std::filesystem::path(currentExecutableDirectory()) / candidate);
+    candidates.push_back(candidate);
+
+    const std::string resolved = resolveExistingPath(candidates);
+    if (!resolved.empty())
+    {
+        return resolved;
+    }
+
+    return candidates.front().lexically_normal().string();
 }
 
 bool LDds::createTransportFromQos(const LQos & qos, const TransportConfig & transportConfig)

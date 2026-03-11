@@ -15,12 +15,21 @@
 #include <string>
 #include <type_traits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include "LDds_Global.h"
 
 namespace LDdsFramework {
+
+class LTypeRegistry;
+
+using GeneratedModuleRegisterFn = bool (*)(LTypeRegistry & registry);
+
+LDDSCORE_EXPORT bool registerGeneratedModule(
+    const char *              moduleName,
+    GeneratedModuleRegisterFn registerFn);
 
 /**
  * @class LTypeRegistry
@@ -71,6 +80,14 @@ public:
         DeserializeFn       deserializer
     );
 
+    bool registerTopicType(
+        const std::string & topicKey,
+        const std::string & typeName,
+        TypeFactory         factory,
+        SerializeFn         serializer,
+        DeserializeFn       deserializer
+    );
+
     /**
      * @brief 使用调用方提供的序列化/反序列化 lambda 注册类型。
      */
@@ -112,6 +129,50 @@ public:
         return registerType(
             typeName,
             topic,
+            std::move(factory),
+            std::move(serializeFn),
+            std::move(deserializeFn)
+        );
+    }
+
+    template<typename T, typename Serializer, typename Deserializer>
+    bool registerTopicType(
+        const std::string & topicKey,
+        const std::string & typeName,
+        Serializer &&       serializer,
+        Deserializer &&     deserializer
+    )
+    {
+        TypeFactory factory = [] {
+            return std::static_pointer_cast<void>(std::make_shared<T>());
+        };
+
+        SerializeFn serializeFn = [serializer = std::forward<Serializer>(serializer)](
+                                      const void * object,
+                                      std::vector<uint8_t> & outPayload
+                                  ) -> bool {
+            if (object == nullptr)
+            {
+                return false;
+            }
+            return serializer(*static_cast<const T *>(object), outPayload);
+        };
+
+        DeserializeFn deserializeFn =
+            [deserializer = std::forward<Deserializer>(deserializer)](
+                const std::vector<uint8_t> & payload,
+                void *                       object
+            ) -> bool {
+            if (object == nullptr)
+            {
+                return false;
+            }
+            return deserializer(payload, *static_cast<T *>(object));
+        };
+
+        return registerTopicType(
+            topicKey,
+            typeName,
             std::move(factory),
             std::move(serializeFn),
             std::move(deserializeFn)
@@ -182,6 +243,61 @@ public:
         return registerType<T>(typeName, topic, serializer, deserializer);
     }
 
+    template<typename T>
+    bool registerTopicType(const std::string & topicKey, const std::string & typeName)
+    {
+        auto serializer = [](const T & object, std::vector<uint8_t> & outPayload) -> bool {
+            if constexpr (std::is_same_v<T, std::string>)
+            {
+                outPayload.assign(object.begin(), object.end());
+                return true;
+            }
+            else if constexpr (std::is_same_v<T, std::vector<uint8_t>>)
+            {
+                outPayload = object;
+                return true;
+            }
+            else if constexpr (std::is_trivially_copyable_v<T>)
+            {
+                const auto * ptr  = reinterpret_cast<const uint8_t *>(&object);
+                outPayload.assign(ptr, ptr + sizeof(T));
+                return true;
+            }
+            else
+            {
+                return false;
+            }
+        };
+
+        auto deserializer = [](const std::vector<uint8_t> & payload, T & object) -> bool {
+            if constexpr (std::is_same_v<T, std::string>)
+            {
+                object.assign(payload.begin(), payload.end());
+                return true;
+            }
+            else if constexpr (std::is_same_v<T, std::vector<uint8_t>>)
+            {
+                object = payload;
+                return true;
+            }
+            else if constexpr (std::is_trivially_copyable_v<T>)
+            {
+                if (payload.size() != sizeof(T))
+                {
+                    return false;
+                }
+                std::memcpy(&object, payload.data(), sizeof(T));
+                return true;
+            }
+            else
+            {
+                return false;
+            }
+        };
+
+        return registerTopicType<T>(topicKey, typeName, serializer, deserializer);
+    }
+
     /**
      * @brief 按 topic 创建对象实例。
      * @return 成功返回实例；未注册返回空指针。
@@ -192,10 +308,15 @@ public:
      * @return 查询失败返回 0。
      */
     uint32_t getTopicByTypeName(const std::string & typeName) const;
+    uint32_t getTopicByTopicKey(const std::string & topicKey) const;
     /**
      * @brief 通过 topic 查询类型名。
      */
     std::string getTypeNameByTopic(uint32_t topic) const;
+    std::string getTopicKeyByTopic(uint32_t topic) const;
+    std::vector<uint32_t> getRegisteredTopics() const;
+    bool applyGeneratedModules(std::vector<std::string> * appliedModules = nullptr);
+    static uint32_t makeTopicId(const std::string & topicKey) noexcept;
 
     /**
      * @brief 按 topic 执行序列化。
@@ -222,6 +343,7 @@ private:
          * @brief 类型全名。
          */
         std::string typeName;
+        std::string topicKey;
         /**
          * @brief topic id。
          */
@@ -248,6 +370,8 @@ private:
      * @brief typeName -> topic 反向索引。
      */
     std::unordered_map<std::string, uint32_t>                m_topicByTypeName;
+    std::unordered_map<std::string, uint32_t>                m_topicByKey;
+    std::unordered_set<std::string>                          m_appliedGeneratedModules;
     /**
      * @brief 读写锁（读多写少场景）。
      */

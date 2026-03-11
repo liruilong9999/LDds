@@ -1,5 +1,5 @@
-#ifndef PUBSUB_DEMO_DEFINE_H
-#define PUBSUB_DEMO_DEFINE_H
+#ifndef FILE2_DEFINE_H
+#define FILE2_DEFINE_H
 
 #include <cstdint>
 #include <cstring>
@@ -7,9 +7,12 @@
 #include <type_traits>
 #include <vector>
 
-#include "pubsub_demo_export.h"
+#include "file2_export.h"
 #include "LByteBuffer.h"
+
 #include "LTypeRegistry.h"
+
+#include "file1_define.h"
 
 #ifndef LDDSFRAMEWORK_IDL_DETAIL_HELPERS_H
 #define LDDSFRAMEWORK_IDL_DETAIL_HELPERS_H
@@ -71,26 +74,22 @@ readEnum(const std::vector<uint8_t> & data, size_t & offset, T & value)
 
 #endif // LDDSFRAMEWORK_IDL_DETAIL_HELPERS_H
 
-namespace Demo {
-struct SensorSample
+namespace P3 {
+struct TestParam : public P1::P2::Handle
 {
-    SensorSample() = default;
-    int32_t id;
-    float temperature;
-    uint64_t timestampMs;
+    TestParam() : P1::P2::Handle() {}
+    int32_t a;
 
     void serialize(LDdsFramework::LByteBuffer & buffer) const
     {
-        LDdsFramework::idl_detail::writePod(buffer, id);
-        LDdsFramework::idl_detail::writePod(buffer, temperature);
-        LDdsFramework::idl_detail::writePod(buffer, timestampMs);
+        P1::P2::Handle::serialize(buffer);
+        LDdsFramework::idl_detail::writePod(buffer, a);
     }
 
     bool deserialize(const std::vector<uint8_t> & data, size_t & offset)
     {
-        if (!LDdsFramework::idl_detail::readPod(data, offset, id)) { return false; }
-        if (!LDdsFramework::idl_detail::readPod(data, offset, temperature)) { return false; }
-        if (!LDdsFramework::idl_detail::readPod(data, offset, timestampMs)) { return false; }
+        if (!P1::P2::Handle::deserialize(data, offset)) { return false; }
+        if (!LDdsFramework::idl_detail::readPod(data, offset, a)) { return false; }
         return true;
     }
 
@@ -107,12 +106,12 @@ struct SensorSample
         return std::vector<uint8_t>(buffer.data(), buffer.data() + buffer.size());
     }
 
-    SensorSample * get() noexcept { return this; }
-    const SensorSample * get() const noexcept { return this; }
+    TestParam * get() noexcept { return this; }
+    const TestParam * get() const noexcept { return this; }
     static uint32_t getTypeId() noexcept { return LDdsFramework::LTypeRegistry::makeTopicId(getTopicKey()); }
-    static const char * getTypeName() noexcept { return "Demo::SensorSample"; }
-    static const char * getTopicKey() noexcept { return "pubsub_demo::SENSOR_SAMPLE_TOPIC"; }
+    static const char * getTypeName() noexcept { return "P3::TestParam"; }
+    static const char * getTopicKey() noexcept { return "file2::TESTPARAM_TOPIC"; }
 };
-} // namespace Demo
+} // namespace P3
 
-#endif // PUBSUB_DEMO_DEFINE_H
+#endif // FILE2_DEFINE_H

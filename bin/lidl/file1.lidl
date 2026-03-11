@@ -1,27 +1,18 @@
-// 示例 IDL：基础类型定义与 topic 绑定
 package P1 {
     package P2 {
-        // 句柄基类
         struct Handle {
-            [desc, 100, "唯一句柄标识"]
             int32 handle;
-            [desc, 0, "毫秒时间戳"]
             int64 datatime;
         }
     }
 
-    // 参数结构体，继承 Handle
     struct Param1 : extend P1::P2::Handle {
-        [desc, "测试字符串", "文本字段"]
         string str1;
         double data1;
         int32 data2;
-        [desc, "", "整型数组"]
         vector<int32> data1Vec;
     }
 }
 
-[xx主题1]
 HANDLE_TOPIC = P1::P2::Handle;
-[xx主题2]
 PARAM1_TOPIC = P1::Param1;
