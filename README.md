@@ -42,6 +42,17 @@ Windows 下建议把 `bin` 放入 `PATH`：
 $env:PATH = "$PWD\bin;$env:PATH"
 ```
 
+### 2.3 Windows PowerShell 兼容
+
+如果机器上没有安装 PowerShell 7，系统里可能只有 `powershell.exe` 而没有 `pwsh.exe`。
+
+本仓库已经做了兼容处理：
+
+- 根工程 `cmake --build` 会自动兼容 `pwsh.exe`
+- `LIdl` 生成出来的工程也会自动兼容 `pwsh.exe`
+
+所以不需要手动修改 vcpkg 配置，也不需要强制安装 PowerShell 7。
+
 ## 3. LIdl 使用方法
 
 ### 3.1 基本命令
@@ -184,8 +195,7 @@ TESTPARAM_TOPIC = P3::TestParam;
 
 using namespace LDdsFramework;
 
-LDds publisher;
-publisher.initialize();
+initialize();
 
 P1::Param1 param1;
 param1.handle = 1001;
@@ -195,14 +205,14 @@ param1.data1 = 3.14;
 param1.data2 = 7;
 param1.data1Vec = {1, 2, 3};
 
-publisher.publish(FILE1_TOPIC_KEY_PARAM1_TOPIC, param1.get());
+publish(FILE1_TOPIC_KEY_PARAM1_TOPIC, param1.get());
 
 P3::TestParam testParam;
 testParam.handle = 2001;
 testParam.datatime = 123456;
 testParam.a = 88;
 
-publisher.publish(FILE2_TOPIC_KEY_TESTPARAM_TOPIC, testParam.get());
+publish(FILE2_TOPIC_KEY_TESTPARAM_TOPIC, testParam.get());
 ```
 
 ### 5.3 订阅端代码写法
@@ -216,11 +226,10 @@ publisher.publish(FILE2_TOPIC_KEY_TESTPARAM_TOPIC, testParam.get());
 
 using namespace LDdsFramework;
 
-LDds subscriber;
-subscriber.initialize();
+initialize();
 
 std::vector<uint8_t> handlePayload;
-if (subscriber.domain().getTopicData(FILE1_TOPIC_ID_HANDLE_TOPIC, handlePayload))
+if (dds().domain().getTopicData(FILE1_TOPIC_ID_HANDLE_TOPIC, handlePayload))
 {
     P1::P2::Handle data;
     if (data.deserialize(handlePayload))
@@ -233,7 +242,7 @@ if (subscriber.domain().getTopicData(FILE1_TOPIC_ID_HANDLE_TOPIC, handlePayload)
 如果业务希望按缓存轮询，也可以这样写：
 
 ```cpp
-LFindSet * handleSet = subscriber.sub(FILE1_TOPIC_KEY_HANDLE_TOPIC);
+LFindSet * handleSet = sub(FILE1_TOPIC_KEY_HANDLE_TOPIC);
 if (handleSet)
 {
     P1::P2::Handle * data = handleSet->getFirstData<P1::P2::Handle>();
@@ -244,12 +253,20 @@ if (handleSet)
 }
 ```
 
+现在也可以直接使用进程单例对象：
+
+```cpp
+LDds::instance().initialize();
+LDds::instance().publish(FILE1_TOPIC_KEY_HANDLE_TOPIC, handle.get());
+```
+
 ### 5.4 同机测试和跨机部署
 
 - 同机测试
   建议在代码里给 `TransportConfig` 显式指定不同 `bindPort`，避免本机端口冲突。
 - 跨机部署
-  可以直接使用 `LDds::initialize()`，域号和 QoS 由 `qos.xml` 统一控制。
+  可以直接使用 `LDdsFramework::initialize()` 或 `LDds::instance().initialize()`，
+  域号和 QoS 由 `qos.xml` 统一控制。
 
 ## 6. qos.xml 怎么写
 

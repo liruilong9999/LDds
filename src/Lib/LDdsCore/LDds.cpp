@@ -23,12 +23,11 @@
 #include <windows.h>
 #else
 #include <dlfcn.h>
+#include <unistd.h>
 #endif
 
 namespace LDdsFramework {
 namespace {
-
-std::atomic<bool> g_initialized(false);
 
 constexpr uint32_t RELIABLE_MIN_WINDOW_SIZE = 16U;
 constexpr uint32_t RELIABLE_MAX_WINDOW_SIZE = 4096U;
@@ -125,6 +124,15 @@ std::string currentExecutableDirectoryImpl()
     return std::filesystem::path(std::string(buffer.data(), length)).parent_path().string();
 #else
     return std::filesystem::current_path().string();
+#endif
+}
+
+uint32_t currentProcessIdValue() noexcept
+{
+#if defined(_WIN32)
+    return static_cast<uint32_t>(::GetCurrentProcessId());
+#else
+    return static_cast<uint32_t>(::getpid());
 #endif
 }
 
@@ -565,6 +573,12 @@ LDds::LDds()
 LDds::~LDds()
 {
     shutdown();
+}
+
+LDds & LDds::instance() noexcept
+{
+    static LDds instance;
+    return instance;
 }
 
 bool LDds::initialize()
@@ -2111,9 +2125,11 @@ void LDds::initializeDiscoveryState(const TransportConfig & transportConfig)
         (m_pTransport != nullptr && m_pTransport->getBoundPort() != 0)
             ? m_pTransport->getBoundPort()
             : transportConfig.bindPort;
+    const uint32_t processId = currentProcessIdValue();
     const std::string nodeSeed =
         "discovery|" + std::to_string(static_cast<uint32_t>(m_effectiveDomainId)) +
         "|" + std::to_string(static_cast<uint32_t>(seedPort)) +
+        "|" + std::to_string(processId) +
         "|" + std::to_string(static_cast<uintptr_t>(reinterpret_cast<uintptr_t>(this)));
     const uint32_t nodeId = fnv1aHash32(nodeSeed);
 
@@ -3134,18 +3150,88 @@ const char * getBuildTime() noexcept
 
 bool initialize() noexcept
 {
-    g_initialized.store(true);
-    return true;
+    try
+    {
+        return LDds::instance().initialize();
+    }
+    catch (...)
+    {
+        return false;
+    }
+}
+
+bool initialize(const TransportConfig & transportConfig) noexcept
+{
+    try
+    {
+        return LDds::instance().initialize(transportConfig);
+    }
+    catch (...)
+    {
+        return false;
+    }
+}
+
+bool initialize(const LQos & qos) noexcept
+{
+    try
+    {
+        return LDds::instance().initialize(qos);
+    }
+    catch (...)
+    {
+        return false;
+    }
+}
+
+bool initialize(
+    const LQos & qos,
+    const TransportConfig & transportConfig,
+    DomainId domainId) noexcept
+{
+    try
+    {
+        return LDds::instance().initialize(qos, transportConfig, domainId);
+    }
+    catch (...)
+    {
+        return false;
+    }
+}
+
+bool initializeFromQosXml(
+    const std::string & qosXmlPath,
+    const TransportConfig & transportConfig,
+    DomainId domainId) noexcept
+{
+    try
+    {
+        return LDds::instance().initializeFromQosXml(qosXmlPath, transportConfig, domainId);
+    }
+    catch (...)
+    {
+        return false;
+    }
 }
 
 void shutdown() noexcept
 {
-    g_initialized.store(false);
+    LDds::instance().shutdown();
 }
 
 bool isInitialized() noexcept
 {
-    return g_initialized.load();
+    return LDds::instance().isRunning();
+}
+
+bool isRunning() noexcept
+{
+    return LDds::instance().isRunning();
+}
+
+LDds & dds() noexcept
+{
+    return LDds::instance();
 }
 
 } // namespace LDdsFramework

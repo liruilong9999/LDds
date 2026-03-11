@@ -2,7 +2,6 @@
 #include <cstdlib>
 #include <iostream>
 #include <thread>
-#include <vector>
 
 #include "LDds.h"
 #include "file1_topic.h"
@@ -10,76 +9,33 @@
 
 using namespace LDdsFramework;
 
-namespace {
-
-TransportConfig makeLocalSubscribeTransport()
-{
-    TransportConfig config;
-    config.bindAddress = LStringLiteral("127.0.0.1");
-    config.bindPort = 26101;
-    config.enableDiscovery = false;
-    config.enableDomainPortMapping = false;
-    return config;
-}
-
-bool registerLocalGeneratedTypes(LDds & dds)
-{
-    const bool handleOk = dds.registerType<P1::P2::Handle>(
-        P1::P2::Handle::getTypeName(),
-        P1::P2::Handle::getTypeId(),
-        [](const P1::P2::Handle & object, std::vector<uint8_t> & outPayload) -> bool {
-            outPayload = object.serialize();
-            return true;
-        },
-        [](const std::vector<uint8_t> & payload, P1::P2::Handle & object) -> bool {
-            return object.deserialize(payload);
-        });
-
-    const bool testParamOk = dds.registerType<P3::TestParam>(
-        P3::TestParam::getTypeName(),
-        P3::TestParam::getTypeId(),
-        [](const P3::TestParam & object, std::vector<uint8_t> & outPayload) -> bool {
-            outPayload = object.serialize();
-            return true;
-        },
-        [](const std::vector<uint8_t> & payload, P3::TestParam & object) -> bool {
-            return object.deserialize(payload);
-        });
-
-    return handleOk && testParamOk;
-}
-
-} // namespace
-
 int main(int argc, char * argv[])
 {
     (void)argc;
     (void)argv;
 
     /*
-      使用说明:
-      1. 生成头文件后，应用可以直接构造 P1::P2::Handle / P3::TestParam。
-      2. 这里演示“从 Domain 缓存取原始 payload，再用生成类型 deserialize” 的写法，
-         这样最直观，也方便你确认收到的数据字节和业务结构体是一一对应的。
-      3. 如果后续你更偏向高层接口，也可以改为:
-         subscriber.sub(FILE1_TOPIC_KEY_HANDLE_TOPIC)
-         或 subscriber.subscribeTopic<T>(...)
+      Usage:
+      1. Generate and install file1/file2 first:
+         .\bin\LIdl.exe -V .\bin\lidl\file2.lidl
+      2. Do not set ports or domain in code.
+         initialize() reads bin/config/qos.xml.
+      3. Do not manually deserialize in main.
+         sub(topicKey) + getFirstData<T>() returns the generated type directly.
+      4. Use the process singleton directly:
+         initialize();
+         LFindSet * set = sub(topicKey);
+         shutdown();
     */
 
-    LDds subscriber;
-    subscriber.setLogCallback(
+    dds().setLogCallback(
         [](const std::string & line) {
             std::cerr << "[sub][ldds] " << line << std::endl;
         });
-    if (!subscriber.initialize(makeLocalSubscribeTransport()))
-    {
-        std::cerr << "[sub] initialize failed error=" << subscriber.getLastError() << std::endl;
-        return EXIT_FAILURE;
-    }
 
-    if (!registerLocalGeneratedTypes(subscriber))
+    if (!initialize())
     {
-        std::cerr << "[sub] register generated types failed" << std::endl;
+        std::cerr << "[sub] initialize failed error=" << dds().getLastError() << std::endl;
         return EXIT_FAILURE;
     }
 
@@ -92,21 +48,29 @@ int main(int argc, char * argv[])
     {
         if (!gotHandle)
         {
-            std::vector<uint8_t> payload;
-            if (subscriber.domain().getTopicData(FILE1_TOPIC_ID_HANDLE_TOPIC, payload) &&
-                receivedHandle.deserialize(payload))
+            LFindSet * handleSet = sub(FILE1_TOPIC_KEY_HANDLE_TOPIC);
+            if (handleSet != nullptr)
             {
-                gotHandle = true;
+                P1::P2::Handle * data = handleSet->getFirstData<P1::P2::Handle>();
+                if (data != nullptr)
+                {
+                    receivedHandle = *data;
+                    gotHandle = true;
+                }
             }
         }
 
         if (!gotTestParam)
         {
-            std::vector<uint8_t> payload;
-            if (subscriber.domain().getTopicData(FILE2_TOPIC_ID_TESTPARAM_TOPIC, payload) &&
-                receivedTestParam.deserialize(payload))
+            LFindSet * testParamSet = sub(FILE2_TOPIC_KEY_TESTPARAM_TOPIC);
+            if (testParamSet != nullptr)
             {
-                gotTestParam = true;
+                P3::TestParam * data = testParamSet->getFirstData<P3::TestParam>();
+                if (data != nullptr)
+                {
+                    receivedTestParam = *data;
+                    gotTestParam = true;
+                }
             }
         }
 
@@ -123,8 +87,8 @@ int main(int argc, char * argv[])
         std::cerr << "[sub] timeout waiting message"
                   << " handleTopic=" << FILE1_TOPIC_KEY_HANDLE_TOPIC
                   << " testParamTopic=" << FILE2_TOPIC_KEY_TESTPARAM_TOPIC
-                  << " error=" << subscriber.getLastError() << std::endl;
-        subscriber.shutdown();
+                  << " error=" << dds().getLastError() << std::endl;
+        shutdown();
         return EXIT_FAILURE;
     }
 
@@ -134,6 +98,6 @@ int main(int argc, char * argv[])
               << " testParam.handle=" << receivedTestParam.handle
               << " testParam.a=" << receivedTestParam.a << std::endl;
 
-    subscriber.shutdown();
+    shutdown();
     return EXIT_SUCCESS;
 }

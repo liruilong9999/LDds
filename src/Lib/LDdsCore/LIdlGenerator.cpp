@@ -1217,6 +1217,19 @@ std::string generateModuleCMakeLists(
     out << "if(NOT LDDS_ROOT)\n";
     out << "    message(FATAL_ERROR \"Set LDDS_ROOT to the LDds root directory before building this module\")\n";
     out << "endif()\n\n";
+    out << "if(MSVC)\n";
+    out << "    set(PWSH_COMPAT_DIR \"${CMAKE_BINARY_DIR}/codex_tools\")\n";
+    out << "    file(MAKE_DIRECTORY \"${PWSH_COMPAT_DIR}\")\n";
+    out << "    if(DEFINED ENV{WINDIR})\n";
+    out << "        set(_powershell_exe \"$ENV{WINDIR}/System32/WindowsPowerShell/v1.0/powershell.exe\")\n";
+    out << "        if(EXISTS \"${_powershell_exe}\" AND NOT EXISTS \"${PWSH_COMPAT_DIR}/pwsh.exe\")\n";
+    out << "            file(COPY \"${_powershell_exe}\" DESTINATION \"${PWSH_COMPAT_DIR}\")\n";
+    out << "            if(EXISTS \"${PWSH_COMPAT_DIR}/powershell.exe\")\n";
+    out << "                file(RENAME \"${PWSH_COMPAT_DIR}/powershell.exe\" \"${PWSH_COMPAT_DIR}/pwsh.exe\")\n";
+    out << "            endif()\n";
+    out << "        endif()\n";
+    out << "    endif()\n";
+    out << "endif()\n\n";
     out << "add_library(" << targetName << " SHARED\n";
     out << "    " << prefix << "_topic.cpp\n";
     out << ")\n\n";
@@ -1247,11 +1260,14 @@ std::string generateModuleCMakeLists(
     out << "foreach(cfg Debug Release RelWithDebInfo MinSizeRel)\n";
     out << "    string(TOUPPER ${cfg} CFG)\n";
     out << "    set_target_properties(" << targetName << " PROPERTIES\n";
-    out << "        ARCHIVE_OUTPUT_DIRECTORY_${CFG} \"${LDDS_INSTALL_ROOT}/lib\"\n";
-    out << "        LIBRARY_OUTPUT_DIRECTORY_${CFG} \"${LDDS_INSTALL_ROOT}\"\n";
-    out << "        RUNTIME_OUTPUT_DIRECTORY_${CFG} \"${LDDS_INSTALL_ROOT}\"\n";
+        out << "        ARCHIVE_OUTPUT_DIRECTORY_${CFG} \"${LDDS_INSTALL_ROOT}/lib\"\n";
+        out << "        LIBRARY_OUTPUT_DIRECTORY_${CFG} \"${LDDS_INSTALL_ROOT}\"\n";
+        out << "        RUNTIME_OUTPUT_DIRECTORY_${CFG} \"${LDDS_INSTALL_ROOT}\"\n";
     out << "    )\n";
     out << "endforeach()\n";
+    out << "if(MSVC AND EXISTS \"${PWSH_COMPAT_DIR}/pwsh.exe\")\n";
+    out << "    file(COPY \"${PWSH_COMPAT_DIR}/pwsh.exe\" DESTINATION \"${CMAKE_CURRENT_BINARY_DIR}\")\n";
+    out << "endif()\n";
     return out.str();
 }
 

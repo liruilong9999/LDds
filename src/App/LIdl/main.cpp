@@ -264,6 +264,58 @@ std::string quoteArg(const std::string & value)
     return escaped;
 }
 
+#ifdef _WIN32
+fs::path ensurePwshShim(const fs::path & repoRoot)
+{
+    const char * windir = std::getenv("WINDIR");
+    if (windir == nullptr || windir[0] == '\0')
+    {
+        return fs::path();
+    }
+
+    const fs::path powershellExe =
+        fs::path(windir) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe";
+    std::error_code ec;
+    if (!fs::exists(powershellExe, ec) || ec)
+    {
+        return fs::path();
+    }
+
+    const fs::path shimDir = repoRoot / "build" / "codex_tools";
+    const fs::path shimExe = shimDir / "pwsh.exe";
+    fs::create_directories(shimDir, ec);
+    if (ec)
+    {
+        return fs::path();
+    }
+
+    if (!fs::exists(shimExe, ec) || ec)
+    {
+        ec.clear();
+        fs::copy_file(powershellExe, shimExe, fs::copy_options::overwrite_existing, ec);
+        if (ec)
+        {
+            return fs::path();
+        }
+    }
+
+    return shimDir;
+}
+
+std::string wrapCommandForWindows(const fs::path & repoRoot, const std::string & command)
+{
+    const fs::path shimDir = ensurePwshShim(repoRoot);
+    if (shimDir.empty())
+    {
+        return command;
+    }
+
+    std::ostringstream wrapped;
+    wrapped << "cmd /c \"set PATH=" << shimDir.string() << ";%PATH% && " << command << "\"";
+    return wrapped.str();
+}
+#endif
+
 fs::path resolveExecutablePath()
 {
 #ifdef _WIN32
@@ -320,11 +372,33 @@ void printParseErrors(const std::string & filePath, const ParseResult & parseRes
     }
 }
 
-int runCommandWithLogs(const std::string & title, const std::string & command)
+int runCommandWithLogs(const fs::path & repoRoot, const std::string & title, const std::string & command)
 {
     std::cout << title << std::endl;
-    std::cout << "  " << command << std::endl;
-    return std::system(command.c_str());
+    std::string actualCommand = command;
+#ifdef _WIN32
+    actualCommand = wrapCommandForWindows(repoRoot, command);
+#endif
+    std::cout << "  " << actualCommand << std::endl;
+    return std::system(actualCommand.c_str());
+}
+
+std::string currentRuntimeConfigName()
+{
+#ifdef _DEBUG
+    return "Debug";
+#else
+    return "Release";
+#endif
+}
+
+bool hasCoreArtifacts(const fs::path & repoRoot, const std::string & config)
+{
+    const bool debugConfig = (config == "Debug");
+    const fs::path dllPath = repoRoot / "bin" / (debugConfig ? "LDdsCored.dll" : "LDdsCore.dll");
+    const fs::path libPath = repoRoot / "bin" / "lib" / (debugConfig ? "LDdsCored.lib" : "LDdsCore.lib");
+    std::error_code ec;
+    return fs::exists(dllPath, ec) && !ec && fs::exists(libPath, ec) && !ec;
 }
 
 bool buildGeneratedCppModule(
@@ -348,7 +422,7 @@ bool buildGeneratedCppModule(
     }
 #endif
 
-    if (runCommandWithLogs("Configure generated project:", configureCommand.str()) != 0)
+    if (runCommandWithLogs(repoRoot, "Configure generated project:", configureCommand.str()) != 0)
     {
         errorMessage = "cmake configure failed";
         return false;
@@ -359,7 +433,7 @@ bool buildGeneratedCppModule(
     {
         std::ostringstream buildCommand;
         buildCommand << "cmake --build " << quoteArg(buildDir.string()) << " --config " << config;
-        if (runCommandWithLogs("Build generated project (" + config + "):", buildCommand.str()) != 0)
+        if (runCommandWithLogs(repoRoot, "Build generated project (" + config + "):", buildCommand.str()) != 0)
         {
             errorMessage = "cmake build failed for " + config;
             return false;
@@ -381,6 +455,22 @@ bool ensureCoreBuilt(
         return true;
     }
 
+    if (config == currentRuntimeConfigName())
+    {
+        if (hasCoreArtifacts(repoRoot, config))
+        {
+            std::cout << "Skip rebuilding LDdsCore (" << config
+                      << "): current LIdl process is using this DLL, reuse existing artifacts." << std::endl;
+            builtConfigs.insert(config);
+            return true;
+        }
+
+        errorMessage =
+            "current LIdl process is using LDdsCore(" + config +
+            "), and existing artifacts are missing; build workspace once before running LIdl";
+        return false;
+    }
+
     const fs::path repoBuildDir = repoRoot / "build";
 
     std::ostringstream configureCommand;
@@ -393,7 +483,7 @@ bool ensureCoreBuilt(
     }
 #endif
 
-    if (runCommandWithLogs("Configure LDdsCore workspace:", configureCommand.str()) != 0)
+    if (runCommandWithLogs(repoRoot, "Configure LDdsCore workspace:", configureCommand.str()) != 0)
     {
         errorMessage = "workspace configure failed";
         return false;
@@ -403,7 +493,7 @@ bool ensureCoreBuilt(
     buildCommand << "cmake --build " << quoteArg(repoBuildDir.string())
                  << " --config " << config
                  << " --target LDdsCore";
-    if (runCommandWithLogs("Build LDdsCore (" + config + "):", buildCommand.str()) != 0)
+    if (runCommandWithLogs(repoRoot, "Build LDdsCore (" + config + "):", buildCommand.str()) != 0)
     {
         errorMessage = "LDdsCore build failed for " + config;
         return false;

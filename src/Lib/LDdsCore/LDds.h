@@ -75,6 +75,8 @@ public:
     LDds(const LDds & other) = delete;
     LDds & operator=(const LDds & other) = delete;
 
+    static LDds & instance() noexcept;
+
     bool initialize();
     bool initialize(const TransportConfig & transportConfig);
 
@@ -531,15 +533,44 @@ const char * getBuildTime() noexcept;
 /**
  * @brief 模块级初始化（兼容旧接口）。
  */
-bool initialize() noexcept;
+LDDSCORE_EXPORT bool initialize() noexcept;
+LDDSCORE_EXPORT bool initialize(const TransportConfig & transportConfig) noexcept;
+LDDSCORE_EXPORT bool initialize(const LQos & qos) noexcept;
+LDDSCORE_EXPORT bool initialize(
+    const LQos & qos,
+    const TransportConfig & transportConfig,
+    DomainId domainId = INVALID_DOMAIN_ID) noexcept;
+LDDSCORE_EXPORT bool initializeFromQosXml(
+    const std::string & qosXmlPath,
+    const TransportConfig & transportConfig = TransportConfig(),
+    DomainId domainId = INVALID_DOMAIN_ID) noexcept;
 /**
  * @brief 模块级关闭（兼容旧接口）。
  */
-void shutdown() noexcept;
+LDDSCORE_EXPORT void shutdown() noexcept;
 /**
  * @brief 模块是否已初始化（兼容旧接口）。
  */
-bool isInitialized() noexcept;
+LDDSCORE_EXPORT bool isInitialized() noexcept;
+LDDSCORE_EXPORT bool isRunning() noexcept;
+LDDSCORE_EXPORT LDds & dds() noexcept;
+
+template<typename T, typename std::enable_if<!std::is_pointer<T>::value, int>::type = 0>
+bool publish(const std::string & topicKey, const T & object)
+{
+    return dds().publish(topicKey, object);
+}
+
+template<typename T>
+bool publish(const std::string & topicKey, const T * object)
+{
+    return dds().publish(topicKey, object);
+}
+
+inline LFindSet * sub(const std::string & topicKey)
+{
+    return dds().sub(topicKey);
+}
 
 } // namespace LDdsFramework
 

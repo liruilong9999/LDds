@@ -83,6 +83,9 @@ macro(CreateTarget ProjectName Type)
     if(MSVC)
         set_target_properties(${PROJECT_NAME} PROPERTIES
             VS_DEBUGGER_WORKING_DIRECTORY "$(OutDir)")
+        if(DEFINED PWSH_COMPAT_EXE AND EXISTS "${PWSH_COMPAT_EXE}")
+            file(COPY "${PWSH_COMPAT_EXE}" DESTINATION "${CMAKE_CURRENT_BINARY_DIR}")
+        endif()
     endif()
 
     foreach(_lib ${SELF_LIBRARY_LIST})
